@@ -472,6 +472,117 @@ export async function materializeBundleMcpToolsForRun(params: {
   };
 }
 
+const EMPTY_MCP_CATALOG: McpToolCatalog = {
+  version: 1,
+  generatedAt: 0,
+  servers: {},
+  tools: [],
+};
+
+/**
+ * Non-blocking variant of {@link materializeBundleMcpToolsForRun}. Never awaits
+ * getCatalog on the run-prep path: it projects tools from the catalog that is
+ * ALREADY warm ({@link SessionMcpRuntime.peekCatalog}). When the catalog is cold
+ * (peek returns null) it advertises ZERO MCP tools so the run streams immediately
+ * on built-ins, and warms the cold servers in the background — holding a lease for
+ * the connect's duration so the idle sweeper can't dispose the runtime mid-warm.
+ * Tools materialize on the next run once the catalog is warm.
+ *
+ * Advertising zero tools when cold (rather than a half-attached/ghost tool) is the
+ * key safety property: the model can never misfire on a tool whose server has not
+ * connected. callTool still self-connects on the execution path, so warm tools stay
+ * fully functional through the unchanged execute closure below.
+ */
+export async function materializeBundleMcpToolsForRunNonBlocking(params: {
+  runtime: SessionMcpRuntime;
+  reservedToolNames?: Iterable<string>;
+  disposeRuntime?: () => Promise<void>;
+}): Promise<BundleMcpToolRuntime> {
+  let disposed = false;
+  params.runtime.markUsed();
+
+  if (params.runtime.peekCatalog() === null) {
+    const warmLease = params.runtime.acquireLease?.();
+    void params.runtime
+      .getCatalog()
+      .catch(() => {})
+      .finally(() => warmLease?.());
+  }
+
+  const catalog = params.runtime.peekCatalog() ?? EMPTY_MCP_CATALOG;
+  const tools = buildBundleMcpToolsFromCatalog({
+    catalog,
+    reservedToolNames: params.reservedToolNames,
+    createExecute: (tool) => async (_toolCallId: string, input: unknown) => {
+      params.runtime.markUsed();
+      const result = await params.runtime.callTool(tool.serverName, tool.toolName, input);
+      return toAgentToolResult({
+        serverName: tool.serverName,
+        toolName: tool.toolName,
+        result,
+      });
+    },
+    createResourceListExecute: params.runtime.listResources
+      ? (serverName) => async () => {
+          params.runtime.markUsed();
+          return toJsonAgentToolResult({
+            serverName,
+            operation: "resources_list",
+            value: await params.runtime.listResources?.(serverName),
+          });
+        }
+      : undefined,
+    createResourceReadExecute: params.runtime.readResource
+      ? (serverName) => async (_toolCallId: string, input: unknown) => {
+          params.runtime.markUsed();
+          return toJsonAgentToolResult({
+            serverName,
+            operation: "resources_read",
+            value: await params.runtime.readResource?.(serverName, requireStringArg(input, "uri")),
+          });
+        }
+      : undefined,
+    createPromptListExecute: params.runtime.listPrompts
+      ? (serverName) => async () => {
+          params.runtime.markUsed();
+          return toJsonAgentToolResult({
+            serverName,
+            operation: "prompts_list",
+            value: await params.runtime.listPrompts?.(serverName),
+          });
+        }
+      : undefined,
+    createPromptGetExecute: params.runtime.getPrompt
+      ? (serverName) => async (_toolCallId: string, input: unknown) => {
+          params.runtime.markUsed();
+          return toJsonAgentToolResult({
+            serverName,
+            operation: "prompts_get",
+            value: await params.runtime.getPrompt?.(
+              serverName,
+              requireStringArg(input, "name"),
+              optionalStringRecordArg(input, "arguments"),
+            ),
+          });
+        }
+      : undefined,
+  });
+
+  return {
+    tools,
+    ...(catalog.diagnostics && catalog.diagnostics.length > 0
+      ? { diagnostics: catalog.diagnostics }
+      : {}),
+    dispose: async () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      await params.disposeRuntime?.();
+    },
+  };
+}
+
 export async function createBundleMcpToolRuntime(params: {
   workspaceDir: string;
   cfg?: OpenClawConfig;
