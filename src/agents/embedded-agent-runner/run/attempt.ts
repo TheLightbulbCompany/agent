@@ -80,7 +80,7 @@ import { isReasoningTagProvider } from "../../../utils/provider-utils.js";
 import { createBundleLspToolRuntime } from "../../agent-bundle-lsp-runtime.js";
 import {
   getOrCreateSessionMcpRuntime,
-  materializeBundleMcpToolsForRun,
+  materializeBundleMcpToolsForRunNonBlocking,
 } from "../../agent-bundle-mcp-tools.js";
 import { createPreparedEmbeddedAgentSettingsManager } from "../../agent-project-settings.js";
 import { resolveAgentDir, resolveSessionAgentIds } from "../../agent-scope.js";
@@ -907,7 +907,9 @@ export async function runEmbeddedAttempt(
   // Releases the eager session lock if post-prompt code exits before cleanup.
   let releaseRetainedSessionLock: (() => Promise<void>) | undefined;
   let retainedSessionFileOwner: EmbeddedAttemptSessionFileOwner | undefined;
-  let bundleMcpRuntime: Awaited<ReturnType<typeof materializeBundleMcpToolsForRun>> | undefined;
+  let bundleMcpRuntime:
+    | Awaited<ReturnType<typeof materializeBundleMcpToolsForRunNonBlocking>>
+    | undefined;
   let bundleLspRuntime: Awaited<ReturnType<typeof createBundleLspToolRuntime>> | undefined;
   let toolSearchCatalogRef: ToolSearchCatalogRef | undefined;
   let toolSearchCatalogApplied = false;
@@ -1445,7 +1447,7 @@ export async function runEmbeddedAttempt(
         })
       : undefined;
     bundleMcpRuntime = bundleMcpSessionRuntime
-      ? await materializeBundleMcpToolsForRun({
+      ? await materializeBundleMcpToolsForRunNonBlocking({
           runtime: bundleMcpSessionRuntime,
           reservedToolNames: [
             ...tools.map((tool) => tool.name),
