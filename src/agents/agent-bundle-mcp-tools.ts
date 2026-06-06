@@ -26,4 +26,5 @@ export {
   buildBundleMcpToolsFromCatalog,
   createBundleMcpToolRuntime,
   materializeBundleMcpToolsForRun,
+  materializeBundleMcpToolsForRunNonBlocking,
 } from "./agent-bundle-mcp-materialize.js";
