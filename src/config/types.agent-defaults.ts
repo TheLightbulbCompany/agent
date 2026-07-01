@@ -54,8 +54,16 @@ export type AgentModelListConfig = {
 };
 
 export type AgentContextPruningConfig = {
-  /** Pruning mode for old tool results in model context. */
-  mode?: "off" | "cache-ttl";
+  /**
+   * Pruning mode for old tool results in model context.
+   * - `cache-ttl`: prompt-cache-aware; only prunes after the provider prompt
+   *   cache ages past its TTL. Requires a provider that emits cache markers
+   *   (Anthropic family, Google); inert elsewhere.
+   * - `size`: provider-agnostic; prunes on every turn once the transcript
+   *   passes the soft/hard context ratios. Use on providers without a prompt
+   *   cache (e.g. OpenAI/ChatGPT-responses) to bound tool-result accumulation.
+   */
+  mode?: "off" | "cache-ttl" | "size";
   /** TTL to consider cache expired (duration string, default unit: minutes). */
   ttl?: string;
   /** Number of most recent assistant turns preserved from pruning. */
