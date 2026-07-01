@@ -69,6 +69,29 @@ Pruning is off by default for non-Anthropic providers. To enable:
 
 To disable: set `mode: "off"`.
 
+### `size` mode (providers without a prompt cache)
+
+`cache-ttl` only trims after the prompt cache ages past its TTL, so it does
+nothing on providers that do not expose prompt-cache markers (e.g. OpenAI /
+ChatGPT-responses). On those providers, long tool-heavy sessions accumulate
+tool results until they overflow the context window. Use `mode: "size"` there —
+it runs the same soft-trim/hard-clear passes but evaluates on **every turn**
+based on the context-size ratios instead of the cache TTL:
+
+```json5
+{
+  agents: {
+    defaults: {
+      contextPruning: { mode: "size" },
+    },
+  },
+}
+```
+
+For convenience, `mode: "cache-ttl"` automatically degrades to `size` behavior
+when the active provider has no prompt cache, so a single `cache-ttl` config
+works across cache-aware and non-cache providers.
+
 ## Pruning vs compaction
 
 |            | Pruning            | Compaction              |

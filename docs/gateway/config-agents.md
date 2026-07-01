@@ -705,7 +705,7 @@ Prunes **old tool results** from in-memory context before sending to the LLM. Do
   agents: {
     defaults: {
       contextPruning: {
-        mode: "cache-ttl", // off (default) | cache-ttl
+        mode: "cache-ttl", // off (default) | cache-ttl | size
         ttl: "1h", // duration (ms/s/m/h), default unit: minutes; default: 5m
         keepLastAssistants: 3,
         softTrimRatio: 0.3,
@@ -733,6 +733,7 @@ Prunes **old tool results** from in-memory context before sending to the LLM. Do
 
 Notes:
 
+- `mode: "size"` runs the same soft-trim/hard-clear passes but is **provider-agnostic** and **not** gated on prompt-cache TTL — it evaluates on every turn based on the `softTrimRatio`/`hardClearRatio` context ratios. Use it on providers without a prompt cache (e.g. OpenAI / ChatGPT-responses), where `cache-ttl` is inert and tool-heavy sessions would otherwise grow until they overflow the context window. `cache-ttl` automatically degrades to this behavior on providers that do not support prompt-cache markers.
 - Image blocks are never trimmed/cleared.
 - Ratios are character-based (approximate), not exact token counts.
 - If fewer than `keepLastAssistants` assistant messages exist, pruning is skipped.

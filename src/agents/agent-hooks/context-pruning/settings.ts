@@ -6,7 +6,7 @@ export type ContextPruningToolMatch = {
   allow?: string[];
   deny?: string[];
 };
-type ContextPruningMode = "off" | "cache-ttl";
+type ContextPruningMode = "off" | "cache-ttl" | "size";
 
 /** Raw context-pruning config as read from agent settings. */
 type ContextPruningConfig = {
@@ -74,7 +74,7 @@ export function computeEffectiveSettings(raw: unknown): EffectiveContextPruningS
     return null;
   }
   const cfg = raw as ContextPruningConfig;
-  if (cfg.mode !== "cache-ttl") {
+  if (cfg.mode !== "cache-ttl" && cfg.mode !== "size") {
     return null;
   }
 
