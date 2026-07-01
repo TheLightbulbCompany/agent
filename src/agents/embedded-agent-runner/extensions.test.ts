@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { getCompactionSafeguardRuntime } from "../agent-hooks/compaction-safeguard-runtime.js";
 import compactionSafeguardExtension from "../agent-hooks/compaction-safeguard.js";
 import contextPruningExtension from "../agent-hooks/context-pruning.js";
+import { getContextPruningRuntime } from "../agent-hooks/context-pruning/runtime.js";
 import { buildEmbeddedExtensionFactories } from "./extensions.js";
 
 vi.mock("../../plugins/provider-runtime.js", () => ({
@@ -144,5 +145,79 @@ describe("buildEmbeddedExtensionFactories", () => {
     });
 
     expect(factories).toContain(contextPruningExtension);
+  });
+});
+
+function buildPruningFactories(params: {
+  mode: string;
+  provider: string;
+  modelId: string;
+  api?: string;
+}) {
+  const sessionManager = {} as SessionManager;
+  const factories = buildEmbeddedExtensionFactories({
+    cfg: {
+      agents: { defaults: { contextPruning: { mode: params.mode } } },
+    } as OpenClawConfig,
+    sessionManager,
+    provider: params.provider,
+    modelId: params.modelId,
+    model: {
+      api: params.api,
+      contextWindow: 272_000,
+      contextTokens: 272_000,
+    } as Model,
+  });
+  return { factories, sessionManager };
+}
+
+describe("contextPruning provider gating", () => {
+  it("degrades cache-ttl to size pruning on providers without a prompt cache (openai/chatgpt-responses)", () => {
+    // Before the fix this returned no factory: cache-ttl was hard-gated to
+    // cache-eligible providers, so gpt-5.5 tool results accumulated to overflow.
+    const { factories, sessionManager } = buildPruningFactories({
+      mode: "cache-ttl",
+      provider: "openai",
+      modelId: "gpt-5.5",
+      api: "openai-chatgpt-responses",
+    });
+
+    expect(factories).toContain(contextPruningExtension);
+    expect(getContextPruningRuntime(sessionManager)?.settings.mode).toBe("size");
+  });
+
+  it("keeps cache-ttl semantics on cache-eligible providers (anthropic)", () => {
+    const { factories, sessionManager } = buildPruningFactories({
+      mode: "cache-ttl",
+      provider: "anthropic",
+      modelId: "claude-sonnet-4-6",
+      api: "anthropic-messages",
+    });
+
+    expect(factories).toContain(contextPruningExtension);
+    expect(getContextPruningRuntime(sessionManager)?.settings.mode).toBe("cache-ttl");
+  });
+
+  it("enables explicit size pruning on any provider", () => {
+    const { factories, sessionManager } = buildPruningFactories({
+      mode: "size",
+      provider: "openai",
+      modelId: "gpt-5.5",
+      api: "openai-chatgpt-responses",
+    });
+
+    expect(factories).toContain(contextPruningExtension);
+    expect(getContextPruningRuntime(sessionManager)?.settings.mode).toBe("size");
+  });
+
+  it("does not register pruning when mode is off", () => {
+    const { factories } = buildPruningFactories({
+      mode: "off",
+      provider: "openai",
+      modelId: "gpt-5.5",
+      api: "openai-chatgpt-responses",
+    });
+
+    expect(factories).not.toContain(contextPruningExtension);
   });
 });

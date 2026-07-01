@@ -140,14 +140,27 @@ function buildContextPruningFactory(params: {
   model: ProviderRuntimeModel | undefined;
 }): ExtensionFactory | undefined {
   const raw = params.cfg?.agents?.defaults?.contextPruning;
-  if (raw?.mode !== "cache-ttl") {
-    return undefined;
-  }
-  if (!isCacheTtlEligibleProvider(params.provider, params.modelId, params.model?.api)) {
+  const mode = raw?.mode;
+  if (mode !== "cache-ttl" && mode !== "size") {
     return undefined;
   }
 
-  const settings = computeEffectiveSettings(raw);
+  // `cache-ttl` pruning is prompt-cache-aware: it only trims once the provider's
+  // prompt cache has aged past its TTL, so it is limited to providers that emit
+  // cache markers (Anthropic family, Google). On providers without a prompt
+  // cache — notably OpenAI / ChatGPT-responses — that mode is completely inert,
+  // and long tool-heavy sessions accumulate tool results until they overflow the
+  // context window. Degrade it to provider-agnostic `size` pruning there so tool
+  // results are trimmed on every turn once the transcript passes the soft/hard
+  // context ratios. `size` is always provider-agnostic and never gated here.
+  const cacheEligible = isCacheTtlEligibleProvider(
+    params.provider,
+    params.modelId,
+    params.model?.api,
+  );
+  const effectiveMode = mode === "size" || !cacheEligible ? "size" : "cache-ttl";
+
+  const settings = computeEffectiveSettings({ ...raw, mode: effectiveMode });
   if (!settings) {
     return undefined;
   }
@@ -162,10 +175,14 @@ function buildContextPruningFactory(params: {
     contextWindowTokens: resolveContextWindowTokens(params),
     isToolPrunable: makeToolPrunablePredicate(settings.tools),
     dropThinkingBlocks: transcriptPolicy.dropThinkingBlocks,
-    lastCacheTouchAt: readLastCacheTtlTimestamp(params.sessionManager, {
-      provider: params.provider,
-      modelId: params.modelId,
-    }),
+    // Only `cache-ttl` consults the cache marker; `size` prunes unconditionally.
+    lastCacheTouchAt:
+      effectiveMode === "cache-ttl"
+        ? readLastCacheTtlTimestamp(params.sessionManager, {
+            provider: params.provider,
+            modelId: params.modelId,
+          })
+        : undefined,
   });
 
   return contextPruningExtension;
