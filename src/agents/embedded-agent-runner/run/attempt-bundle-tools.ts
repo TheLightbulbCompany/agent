@@ -2,7 +2,7 @@ import { getPluginToolMeta } from "../../../plugins/tools.js";
 import { createBundleLspToolRuntime } from "../../agent-bundle-lsp-runtime.js";
 import {
   getOrCreateSessionMcpRuntime,
-  materializeBundleMcpToolsForRun,
+  materializeBundleMcpToolsForRunNonBlocking,
 } from "../../agent-bundle-mcp-tools.js";
 import { filterLocalModelLeanTools } from "../../local-model-lean.js";
 import { normalizeAgentRuntimeTools } from "../../runtime-plan/tools.js";
@@ -114,7 +114,7 @@ export async function prepareEmbeddedAttemptBundleTools(params: {
       })
     : undefined;
   const bundleMcpRuntime = bundleMcpSessionRuntime
-    ? await materializeBundleMcpToolsForRun({
+    ? await materializeBundleMcpToolsForRunNonBlocking({
         runtime: bundleMcpSessionRuntime,
         agentId: params.sessionAgentId,
         reservedToolNames: [

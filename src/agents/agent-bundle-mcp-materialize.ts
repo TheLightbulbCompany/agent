@@ -585,6 +585,58 @@ export async function materializeBundleMcpToolsForRun(params: {
   };
 }
 
+// ISOL8 FORK PATCH (non-blocking materialization) -----------------------------
+/**
+ * Non-blocking variant of {@link materializeBundleMcpToolsForRun}. Never awaits a
+ * COLD getCatalog on the run-prep path.
+ *
+ * - Warm catalog (`peekCatalog() !== null`): delegate to the blocking
+ *   materializer. Its `getCatalog()` returns the already-cached catalog with no
+ *   connect (see `getCatalog`: `if (catalog) return catalog`), so this projects
+ *   the full tool set — plus MCP-App views and the run-duration lease — without
+ *   blocking.
+ * - Cold catalog (`peekCatalog() === null`): advertise ZERO MCP tools so the run
+ *   streams immediately on built-ins, and warm the servers in the background,
+ *   holding a lease for the connect's duration so the idle sweeper cannot dispose
+ *   the runtime mid-warm. Tools materialize on the next run once the catalog is
+ *   warm.
+ *
+ * Advertising zero tools when cold (rather than a half-attached/ghost tool) is
+ * the key safety property: the model can never misfire on a tool whose server
+ * has not connected. `callTool` still self-connects on the execution path, so
+ * warm tools stay fully functional.
+ */
+export async function materializeBundleMcpToolsForRunNonBlocking(params: {
+  runtime: SessionMcpRuntime;
+  reservedToolNames?: Iterable<string>;
+  disposeRuntime?: () => Promise<void>;
+}): Promise<BundleMcpToolRuntime> {
+  params.runtime.markUsed();
+  if (params.runtime.peekCatalog() !== null) {
+    // Warm: the blocking materializer's getCatalog() resolves from cache — no I/O.
+    return materializeBundleMcpToolsForRun(params);
+  }
+  // Cold: warm the servers in the background under a lease; stream this run on
+  // built-ins. The lease keeps the idle sweeper from disposing the runtime while
+  // the connect is in flight, and releases when getCatalog settles.
+  const warmLease = params.runtime.acquireLease?.();
+  void params.runtime
+    .getCatalog()
+    .catch(() => {})
+    .finally(() => warmLease?.());
+  let disposed = false;
+  return {
+    tools: [],
+    dispose: async () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      await params.disposeRuntime?.();
+    },
+  };
+}
+
 export async function createBundleMcpToolRuntime(params: {
   workspaceDir: string;
   cfg?: OpenClawConfig;
