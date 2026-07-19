@@ -9,7 +9,7 @@ import { attachToolAllowlistIntersection } from "../../tool-policy.js";
 const mocks = vi.hoisted(() => ({
   createBundleLspToolRuntime: vi.fn(),
   getOrCreateSessionMcpRuntime: vi.fn(),
-  materializeBundleMcpToolsForRun: vi.fn(),
+  materializeBundleMcpToolsForRunNonBlocking: vi.fn(),
   applyFinalEffectiveToolPolicy: vi.fn(),
   filterRuntimeCompatibleTools: vi.fn(),
 }));
@@ -20,7 +20,7 @@ vi.mock("../../agent-bundle-lsp-runtime.js", () => ({
 
 vi.mock("../../agent-bundle-mcp-tools.js", () => ({
   getOrCreateSessionMcpRuntime: mocks.getOrCreateSessionMcpRuntime,
-  materializeBundleMcpToolsForRun: mocks.materializeBundleMcpToolsForRun,
+  materializeBundleMcpToolsForRunNonBlocking: mocks.materializeBundleMcpToolsForRunNonBlocking,
 }));
 
 vi.mock("../../runtime-plan/tools.js", () => ({
@@ -381,7 +381,7 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
     const disposeMcp = vi.fn(async () => {});
     const disposeLsp = vi.fn(async () => {});
     mocks.getOrCreateSessionMcpRuntime.mockResolvedValue({});
-    mocks.materializeBundleMcpToolsForRun.mockResolvedValue({
+    mocks.materializeBundleMcpToolsForRunNonBlocking.mockResolvedValue({
       tools: [],
       dispose: disposeMcp,
     });
