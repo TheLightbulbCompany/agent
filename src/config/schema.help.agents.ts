@@ -254,5 +254,7 @@ export const AGENT_FIELD_HELP: Record<string, string> = {
   "mcp.servers.*.codex.default_tools_approval_mode":
     "Codex-native spelling for the same per-server MCP tool approval mode. Prefer defaultToolsApprovalMode in OpenClaw config.",
   "mcp.sessionIdleTtlMs":
-    "Idle TTL in milliseconds for session-scoped bundled MCP runtimes. Defaults to 10 minutes; set 0 to disable idle eviction.",
+    "Idle TTL in milliseconds for bundled MCP runtimes. Defaults to 10 minutes; set 0 to disable idle eviction.",
+  "mcp.runtimeScope":
+    'Scope for the bundled MCP runtime cache. "session" (default) creates one runtime per session and disposes it when the session is retired. "shared" reuses one runtime per (workspaceDir, agentDir, configFingerprint) across all sessions; per-session disposal does not tear it down — it is reaped only by the idle sweep (mcp.sessionIdleTtlMs) once no session has used it within the TTL and it holds no active leases. Use "shared" in single-tenant deployments where every session shares one workspace and MCP config, to avoid a per-session MCP connect storm.',
 };

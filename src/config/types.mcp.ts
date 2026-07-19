@@ -91,9 +91,25 @@ export type McpConfig = {
     sandboxPort?: number;
   };
   /**
-   * Idle TTL for session-scoped bundled MCP runtimes, in milliseconds.
+   * Idle TTL for bundled MCP runtimes, in milliseconds.
    *
    * Defaults to 10 minutes. Set to 0 to disable idle eviction.
    */
   sessionIdleTtlMs?: number;
+  /**
+   * Scope for the bundled MCP runtime cache.
+   *
+   * - `"session"` (default): one runtime per session. Per-session disposal
+   *   tears the runtime down. Matches behavior prior to the introduction of
+   *   this flag.
+   * - `"shared"`: one runtime per `(workspaceDir, agentDir, configFingerprint)`
+   *   tuple, reused across every session that matches it. Per-session disposal
+   *   does NOT tear it down; it is reaped only by the idle sweep
+   *   (`sessionIdleTtlMs`) once no session has used it within the TTL and it
+   *   holds no active leases. Suitable for single-tenant deployments where every
+   *   session shares one workspace and the same MCP server config, to avoid a
+   *   per-session MCP connect storm. Ignored while MCP apps are enabled (app
+   *   view leases bind to a per-session runtime identity).
+   */
+  runtimeScope?: "session" | "shared";
 };

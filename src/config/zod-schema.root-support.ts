@@ -430,6 +430,15 @@ export const McpConfigSchema = z
       })
       .optional(),
     sessionIdleTtlMs: z.number().finite().min(0).optional(),
+    // ISOL8 FORK PATCH (shared-runtime-scope): bundled MCP runtime sharing
+    // policy. "session" (default) = one runtime per gateway session; "shared"
+    // keys the runtime on (workspaceDir, configFingerprint) so sessions on the
+    // same workspace + mcp config reuse one ref-counted runtime (single-tenant
+    // per-user containers on EFS — avoids the per-session connect storm). This
+    // key is fork-only; it must live in THIS strictObject (McpConfigSchema
+    // relocated here from zod-schema.ts in upstream #106359) or the strict
+    // schema rejects mcp.runtimeScope and every MCP owner crash-loops on boot.
+    runtimeScope: z.enum(["session", "shared"]).optional(),
   })
   .optional();
 

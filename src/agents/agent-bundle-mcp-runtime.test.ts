@@ -3409,6 +3409,7 @@ describe("requester-scoped MCP connection resolution", () => {
     await manager.disposeAll();
     expect(testing.getBookkeepingSizes(manager)).toEqual({
       runtimes: 0,
+      runtimeKeyIndex: 0,
       connectionMeta: 0,
       createInFlight: 0,
       requesterWorkChains: 0,
@@ -4833,5 +4834,236 @@ process.on("SIGINT", shutdown);`,
       }
     },
   );
+});
+
+// ISOL8 FORK PATCH (shared-runtime-scope) -------------------------------------
+describe("session MCP runtime — shared runtime scope (isol8 fork)", () => {
+  const sharedCfg = {
+    mcp: { runtimeScope: "shared" as const, servers: {}, sessionIdleTtlMs: 100 },
+  };
+
+  function makeTrackedFactory(opts: {
+    clock: () => number;
+    created: string[];
+    disposed: string[];
+  }): RuntimeFactory {
+    return (params) => {
+      opts.created.push(params.sessionId);
+      let lastUsedAt = opts.clock();
+      let activeLeases = 0;
+      const base = makeRuntime([{ toolName: "probe", description: "probe" }]);
+      return {
+        ...base,
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+        workspaceDir: params.workspaceDir,
+        agentDir: params.agentDir,
+        configFingerprint: params.configFingerprint ?? "fingerprint",
+        get lastUsedAt() {
+          return lastUsedAt;
+        },
+        markUsed: () => {
+          lastUsedAt = opts.clock();
+        },
+        get activeLeases() {
+          return activeLeases;
+        },
+        acquireLease: () => {
+          activeLeases += 1;
+          return () => {
+            activeLeases -= 1;
+          };
+        },
+        dispose: async () => {
+          opts.disposed.push(params.sessionId);
+        },
+      };
+    };
+  }
+
+  function makeSharedManager(clock: () => number, created: string[], disposed: string[]) {
+    return testing.createSessionMcpRuntimeManager({
+      createRuntime: makeTrackedFactory({ clock, created, disposed }),
+      now: clock,
+      enableIdleSweepTimer: false,
+    });
+  }
+
+  it("resolves runtime scope from cfg, defaulting to session", () => {
+    expect(testing.resolveSessionMcpRuntimeScope()).toBe("session");
+    expect(testing.resolveSessionMcpRuntimeScope({})).toBe("session");
+    expect(testing.resolveSessionMcpRuntimeScope({ mcp: {} })).toBe("session");
+    expect(testing.resolveSessionMcpRuntimeScope({ mcp: { runtimeScope: "session" } })).toBe(
+      "session",
+    );
+    expect(testing.resolveSessionMcpRuntimeScope({ mcp: { runtimeScope: "shared" } })).toBe(
+      "shared",
+    );
+  });
+
+  it("keys shared runtimes on (workspaceDir, agentDir, configFingerprint)", () => {
+    const key = testing.buildSharedRuntimeKey("/workspace", "/agents/one", "fp");
+    expect(key).toBe(testing.buildSharedRuntimeKey("/workspace", "/agents/one", "fp"));
+    expect(key).not.toBe(testing.buildSharedRuntimeKey("/workspace", "/agents/two", "fp"));
+    expect(key).not.toBe(testing.buildSharedRuntimeKey("/other", "/agents/one", "fp"));
+    expect(key).not.toBe(testing.buildSharedRuntimeKey("/workspace", "/agents/one", "fp2"));
+    // Never collides with a plain sessionId or a requester composite key ("{...").
+    expect(key.startsWith("__mcp-shared__")).toBe(true);
+  });
+
+  it("shares one runtime across sessions in shared scope", async () => {
+    const created: string[] = [];
+    const disposed: string[] = [];
+    const clock = 1000;
+    const manager = makeSharedManager(() => clock, created, disposed);
+    const base = { workspaceDir: "/workspace", agentDir: "/agents/one", cfg: sharedCfg };
+
+    const runtimeA = await manager.getOrCreate({
+      ...base,
+      sessionId: "s1",
+      sessionKey: "agent:test:s1",
+    });
+    const runtimeB = await manager.getOrCreate({
+      ...base,
+      sessionId: "s2",
+      sessionKey: "agent:test:s2",
+    });
+
+    expect(runtimeA).toBe(runtimeB);
+    expect(created).toHaveLength(1);
+    expect(manager.listRuntimeKeys()).toHaveLength(1);
+    expect(manager.listRuntimeKeys()[0]?.startsWith("__mcp-shared__")).toBe(true);
+    // Both real sessions resolve to the shared runtime via the peek index.
+    expect(manager.peekSession({ sessionId: "s1" })).toBe(runtimeA);
+    expect(manager.peekSession({ sessionKey: "agent:test:s2" })).toBe(runtimeA);
+
+    await manager.disposeAll();
+  });
+
+  it("separates shared runtimes by workspace and by agent", async () => {
+    const created: string[] = [];
+    const disposed: string[] = [];
+    const clock = 1000;
+    const manager = makeSharedManager(() => clock, created, disposed);
+
+    const one = await manager.getOrCreate({
+      sessionId: "s1",
+      workspaceDir: "/w",
+      agentDir: "/agents/one",
+      cfg: sharedCfg,
+    });
+    const two = await manager.getOrCreate({
+      sessionId: "s2",
+      workspaceDir: "/w",
+      agentDir: "/agents/two",
+      cfg: sharedCfg,
+    });
+    const three = await manager.getOrCreate({
+      sessionId: "s3",
+      workspaceDir: "/w2",
+      agentDir: "/agents/one",
+      cfg: sharedCfg,
+    });
+
+    expect(one).not.toBe(two); // same workspace, different agent → distinct
+    expect(one).not.toBe(three); // different workspace → distinct
+    expect(created).toHaveLength(3);
+
+    await manager.disposeAll();
+  });
+
+  it("gives each session its own runtime in session scope (default)", async () => {
+    const created: string[] = [];
+    const disposed: string[] = [];
+    const clock = 1000;
+    const manager = makeSharedManager(() => clock, created, disposed);
+    const base = {
+      workspaceDir: "/workspace",
+      agentDir: "/agents/one",
+      cfg: { mcp: { servers: {} } },
+    };
+
+    const a = await manager.getOrCreate({ ...base, sessionId: "s1" });
+    const b = await manager.getOrCreate({ ...base, sessionId: "s2" });
+
+    expect(a).not.toBe(b);
+    expect(created).toHaveLength(2);
+    expect(manager.listRuntimeKeys().toSorted()).toEqual(["s1", "s2"]);
+
+    await manager.disposeAll();
+  });
+
+  it("does not dispose a shared runtime on per-session disposal; idle sweep reaps it", async () => {
+    const created: string[] = [];
+    const disposed: string[] = [];
+    let clock = 1000;
+    const manager = makeSharedManager(() => clock, created, disposed);
+    const base = { workspaceDir: "/workspace", agentDir: "/agents/one", cfg: sharedCfg };
+
+    await manager.getOrCreate({ ...base, sessionId: "s1", sessionKey: "agent:test:s1" });
+    await manager.getOrCreate({ ...base, sessionId: "s2", sessionKey: "agent:test:s2" });
+
+    await manager.disposeSession("s1");
+    await manager.disposeSession("s2");
+
+    // Per-session disposal never tears the shared runtime down.
+    expect(disposed).toHaveLength(0);
+    expect(manager.listRuntimeKeys()).toHaveLength(1);
+    expect(manager.peekSession({ sessionId: "s1" })).toBeUndefined(); // index pruned
+
+    // Only the idle sweep (past TTL, no active leases) reaps it.
+    clock += 1000;
+    await manager.sweepIdleRuntimes();
+    expect(disposed).toHaveLength(1);
+    expect(manager.listRuntimeKeys()).toHaveLength(0);
+
+    await manager.disposeAll();
+  });
+
+  it("does not idle-sweep a shared runtime while a session holds a lease", async () => {
+    const created: string[] = [];
+    const disposed: string[] = [];
+    let clock = 1000;
+    const manager = makeSharedManager(() => clock, created, disposed);
+    const runtime = await manager.getOrCreate({
+      sessionId: "s1",
+      sessionKey: "agent:test:s1",
+      workspaceDir: "/workspace",
+      agentDir: "/agents/one",
+      cfg: sharedCfg,
+    });
+    const release = runtime.acquireLease?.();
+
+    clock += 1000;
+    await manager.sweepIdleRuntimes();
+    expect(disposed).toHaveLength(0); // leased → retained
+
+    release?.();
+    clock += 1000;
+    await manager.sweepIdleRuntimes();
+    expect(disposed).toHaveLength(1); // unleased + idle → reaped
+
+    await manager.disposeAll();
+  });
+
+  it("falls back to session scope while MCP apps are enabled", async () => {
+    const created: string[] = [];
+    const disposed: string[] = [];
+    const clock = 1000;
+    const manager = makeSharedManager(() => clock, created, disposed);
+    const cfg = {
+      mcp: { runtimeScope: "shared" as const, servers: {}, apps: { enabled: true } },
+    };
+    const base = { workspaceDir: "/workspace", agentDir: "/agents/one", cfg };
+
+    const a = await manager.getOrCreate({ ...base, sessionId: "s1" });
+    const b = await manager.getOrCreate({ ...base, sessionId: "s2" });
+
+    expect(a).not.toBe(b); // per-session, not shared
+    expect(created).toHaveLength(2);
+    expect(manager.listRuntimeKeys().toSorted()).toEqual(["s1", "s2"]);
+
+    await manager.disposeAll();
+  });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -29,6 +29,13 @@ type AdvertisedScopedCatalogEntry = {
 type SessionMcpRuntimeManagerStore = {
   runtimesBySessionId: Map<string, SessionMcpRuntime>;
   sessionIdBySessionKey: Map<string, string>;
+  // ISOL8 FORK PATCH (shared-runtime-scope): sessionId -> shared runtimeKey, so
+  // peekSession can resolve a session to its shared static runtime (whose store
+  // key is a (workspace, agent, config) hash rather than the sessionId). Absent
+  // for session-scope sessions (default). Many sessions may map to one key; the
+  // runtime's own leases + idle sweep govern lifetime, so no ref-counting here.
+  // Stale entries resolve to undefined harmlessly; pruned on session disposal.
+  runtimeKeyBySessionId: Map<string, string>;
   idleTtlMsBySessionId: Map<string, number>;
   deferredRetirementSessionIds: Set<string>;
   // Reset/delete retirement survives late creation or reuse by the stopping run.
@@ -74,6 +81,7 @@ export function createSessionMcpRuntimeManagerStore(
     // Keys are bare sessionId for static runtimes, or requester composite JSON keys.
     runtimesBySessionId: new Map<string, SessionMcpRuntime>(),
     sessionIdBySessionKey: new Map<string, string>(),
+    runtimeKeyBySessionId: new Map<string, string>(),
     idleTtlMsBySessionId: new Map<string, number>(),
     deferredRetirementSessionIds: new Set<string>(),
     requiredRetirementSessionIds: new Set<string>(),
@@ -332,6 +340,10 @@ export function createSessionMcpRuntimeManagerLifecycle(
       ),
     );
     forgetSessionKeysForSessionId(sessionId);
+    // Shared-runtime-scope: drop the peek index entry. The shared runtime itself
+    // is NOT disposed here (its store key is a shared hash, never in
+    // runtimeKeysForSessionId) — only the idle sweep + leases reap it.
+    store.runtimeKeyBySessionId.delete(sessionId);
   };
 
   const rememberAdvertisedScopedCatalog = (sessionId: string, catalog: McpToolCatalog): void => {

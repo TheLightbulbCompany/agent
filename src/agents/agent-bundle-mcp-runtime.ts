@@ -38,7 +38,11 @@ import {
   loadSessionMcpConfig,
   resolveSessionMcpConfigSummary,
 } from "./agent-bundle-mcp-runtime-config.js";
-import { resolveSessionMcpRuntimeIdleTtlMs } from "./agent-bundle-mcp-runtime-shared.js";
+import {
+  buildSharedRuntimeKey,
+  resolveSessionMcpRuntimeIdleTtlMs,
+  resolveSessionMcpRuntimeScope,
+} from "./agent-bundle-mcp-runtime-shared.js";
 import type {
   McpCatalogTool,
   McpRequestOptions,
@@ -994,6 +998,8 @@ export const testing = {
   setBundleMcpCatalogListTimeoutMsForTest,
   setBundleMcpDisposeTimeoutMsForTest,
   resolveSessionMcpRuntimeIdleTtlMs,
+  resolveSessionMcpRuntimeScope,
+  buildSharedRuntimeKey,
   mergeMcpToolCatalogs,
 };
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
