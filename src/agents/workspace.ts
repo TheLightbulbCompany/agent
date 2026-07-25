@@ -38,6 +38,7 @@ import {
   assertNoUnmigratedWorkspaceState,
   LEGACY_WORKSPACE_STATE_CURRENT_FILENAME,
   LEGACY_WORKSPACE_STATE_DIRNAME,
+  resolveLegacyWorkspaceSourcePaths,
 } from "./workspace-legacy-state.js";
 import {
   clearExpiredWorkspaceStateForVanishedWorkspace,
@@ -81,9 +82,122 @@ const TRANSIENT_WORKSPACE_READ_ERRNOS = new Set([-11, -4]);
 const TRANSIENT_WORKSPACE_READ_MESSAGE = /Unknown system error -(?:11|4)\b/i;
 const workspaceLogger = createSubsystemLogger("workspace");
 
+const log = createSubsystemLogger("agents/workspace");
+
 const workspaceTemplateCache = new Map<string, Promise<string>>();
 // Git availability is process-stable; cache the probe result, including failure, until restart.
 let gitAvailabilityPromise: Promise<boolean> | null = null;
+
+// Isol8 native-seed sentinel: a NON-legacy marker Isol8 provisioning drops into
+// a freshly seeded agent workspace to record that setup is already complete,
+// WITHOUT writing the legacy `.openclaw/workspace-state.json` (whose migration
+// receipt bricks the presence gate on reprovision). On boot we convert it into
+// the native SQLite `workspace_setup_state` row via the runtime's own writer,
+// then delete it. Deliberately distinct from every path returned by
+// `resolveLegacyWorkspaceSourcePaths` so the migration gate ignores it.
+const ISOL8_NATIVE_SETUP_SEED_DIRNAME = ".openclaw";
+const ISOL8_NATIVE_SETUP_SEED_FILENAME = "isol8-setup-seed.json";
+// Kill-switch: set to "0" to force-disable fleet-wide without a rebuild. Any
+// other value (or unset) leaves the converter armed, but it stays inert unless
+// a sentinel is actually present.
+const ISOL8_NATIVE_SETUP_SEED_ENV = "ISOL8_NATIVE_SETUP_SEED";
+
+/**
+ * Convert an Isol8 native-seed sentinel into native workspace setup state.
+ *
+ * Inert (no-op) when no sentinel is present — the common case for every
+ * existing container. Fully self-contained and non-throwing: the entire body is
+ * wrapped so it can NEVER propagate an error out of the workspace boot path. A
+ * malformed sentinel, a path collision, or a state-store failure logs a warning
+ * and leaves boot to continue exactly as it would without the sentinel.
+ */
+async function applyIsol8NativeSetupSeed(workspaceDir: string): Promise<void> {
+  try {
+    if (process.env[ISOL8_NATIVE_SETUP_SEED_ENV] === "0") {
+      return;
+    }
+    const sentinelPath = path.join(
+      workspaceDir,
+      ISOL8_NATIVE_SETUP_SEED_DIRNAME,
+      ISOL8_NATIVE_SETUP_SEED_FILENAME,
+    );
+
+    let raw: string;
+    try {
+      raw = await fs.readFile(sentinelPath, "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+
+    // Defense in depth: refuse to act if the sentinel path ever collides with a
+    // legacy source path, which the presence gate would treat as unmigrated
+    // legacy state. The distinct filename makes this impossible today; a future
+    // rename that reintroduced a collision must fail safe (skip), never seed.
+    const legacySources = resolveLegacyWorkspaceSourcePaths(workspaceDir);
+    const resolvedSentinel = path.resolve(sentinelPath);
+    const collidesWithLegacy = [
+      ...legacySources.setupStatePaths,
+      ...legacySources.stateDirAttestationPaths,
+      ...legacySources.siblingAttestationPaths,
+    ].some((legacyPath) => path.resolve(legacyPath) === resolvedSentinel);
+    if (collidesWithLegacy) {
+      log.warn("isol8 native setup seed sentinel collides with a legacy source path; skipping", {
+        sentinelPath: resolvedSentinel,
+      });
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      log.warn("isol8 native setup seed sentinel is not valid JSON; skipping", {
+        sentinelPath: resolvedSentinel,
+        error: String(error),
+      });
+      return;
+    }
+    if (typeof parsed !== "object" || parsed === null) {
+      // Valid JSON but not the expected object shape (e.g. "null" / 42). Skip
+      // rather than write an empty row, and leave the sentinel for inspection.
+      log.warn("isol8 native setup seed sentinel is not an object; skipping", {
+        sentinelPath: resolvedSentinel,
+      });
+      return;
+    }
+
+    const seed = parsed as { bootstrapSeededAt?: unknown; setupCompletedAt?: unknown };
+    const bootstrapSeededAt =
+      typeof seed.bootstrapSeededAt === "string" ? seed.bootstrapSeededAt : undefined;
+    const setupCompletedAt =
+      typeof seed.setupCompletedAt === "string" ? seed.setupCompletedAt : undefined;
+
+    // Use the runtime's own writer: correct in-container path canonicalization,
+    // WAL-safe, idempotent upsert, no legacy JSON, no migration receipt. Invalid
+    // ISO timestamps make this throw before any write; the outer catch contains
+    // it and the sentinel is left in place to re-convert on a later boot.
+    mergeWorkspaceSetupState(workspaceDir, { bootstrapSeededAt, setupCompletedAt });
+
+    try {
+      await fs.rm(sentinelPath, { force: true });
+    } catch (error) {
+      // Best-effort. The upsert is idempotent, so a leftover sentinel just
+      // re-converts harmlessly on the next boot.
+      log.warn("isol8 native setup seed sentinel could not be removed after conversion", {
+        sentinelPath: resolvedSentinel,
+        error: String(error),
+      });
+    }
+  } catch (error) {
+    // Never brick boot on a bad sentinel or a transient state-store error.
+    log.warn("isol8 native setup seed conversion failed; continuing boot", {
+      error: String(error),
+    });
+  }
+}
 
 // File content cache keyed by stable file identity to avoid stale reads.
 const workspaceFileCache = new Map<string, { content: string; identity: string }>();
@@ -922,6 +1036,11 @@ export async function ensureAgentWorkspace(params?: {
 }> {
   const rawDir = params?.dir?.trim() ? params.dir.trim() : DEFAULT_AGENT_WORKSPACE_DIR;
   const dir = resolveUserPath(rawDir);
+  // Convert an Isol8 native-seed sentinel (if present) into native setup state
+  // before the first snapshot read, so the seeded completion is reflected in
+  // every downstream decision below. Self-gated on sentinel presence and fully
+  // non-throwing — inert and zero behavior change for workspaces without one.
+  await applyIsol8NativeSetupSeed(dir);
   let initialState = readCanonicalWorkspaceStateSnapshot(dir);
   let reseedingExpiredWorkspaceState = false;
   const recentAttestation = recentWorkspaceAttestation(initialState.attestation);
