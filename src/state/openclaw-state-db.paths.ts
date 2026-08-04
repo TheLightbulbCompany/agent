@@ -30,8 +30,23 @@ function resolveOpenClawStateRootDir(env: NodeJS.ProcessEnv): string {
   return resolveStateDir(env);
 }
 
-/** Resolve the directory that contains the shared state SQLite file. */
+/**
+ * Resolve the directory that contains the shared state SQLite file.
+ *
+ * `OPENCLAW_SQLITE_DIR` relocates ONLY the SQLite databases, leaving the rest
+ * of the state dir where it is. This exists because `OPENCLAW_STATE_DIR` is
+ * all-or-nothing: it takes openclaw.json, credentials/, identity/ and every
+ * other durable subtree with it. A deployment that puts hot SQLite on fast
+ * ephemeral disk while keeping durable state on a network filesystem needs to
+ * move the databases alone.
+ *
+ * Note this knob also relocates the PER-AGENT databases, because
+ * `resolveOpenClawAgentDbPath` derives them from `path.dirname()` of this
+ * directory rather than from the state root.
+ */
 export function resolveOpenClawStateSqliteDir(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.OPENCLAW_SQLITE_DIR?.trim();
+  if (override) return path.resolve(override);
   return path.join(resolveOpenClawStateRootDir(env), "state");
 }
 
