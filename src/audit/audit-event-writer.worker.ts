@@ -16,7 +16,14 @@ if (!parentPort || !stateDir) {
   throw new Error("audit event writer requires a parent port and state directory");
 }
 const port = parentPort;
-const database = { env: { OPENCLAW_STATE_DIR: stateDir } };
+// Spread process.env: this worker is the only site in the tree that built a
+// synthetic env from scratch, which silently dropped any other DB-resolution
+// variable the process was started with (e.g. OPENCLAW_SQLITE_DIR). The result
+// was an audit database resolved to a DIFFERENT directory than every other
+// store — on deployments that relocate SQLite, a second state DB left behind on
+// the original filesystem, written on the hot path and read by nothing. Every
+// other call site already spreads (see src/infra/push-apns-store.ts:92).
+const database = { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
 
 function reportMaintenance(): void {
   try {
