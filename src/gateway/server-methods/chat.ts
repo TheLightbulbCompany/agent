@@ -81,6 +81,7 @@ import {
 import {
   buildGatewaySessionInfo,
   getSessionDefaults,
+  isSessionLookupUnavailableError,
   loadSessionEntry,
   listAgentsForGateway,
   resolveSessionModelRef,
@@ -499,10 +500,29 @@ async function handleChatHistoryRequest({
     agentId: agentIdOverride,
   });
   const sessionLoadOptions = requestedAgentId ? { agentId: requestedAgentId } : undefined;
-  const { cfg, storePath, store, entry, canonicalKey } = loadSessionEntry(
-    sessionKey,
-    sessionLoadOptions,
-  );
+  let loadedSession: ReturnType<typeof loadSessionEntry>;
+  try {
+    loadedSession = loadSessionEntry(sessionKey, sessionLoadOptions);
+  } catch (error) {
+    if (!isSessionLookupUnavailableError(error)) {
+      throw error;
+    }
+    // Answering ok:true with an empty page here would be indistinguishable
+    // from a genuinely new session; the retryable reject below is what the
+    // client's history retry ladder recovers from.
+    context.logGateway.warn(`${method} session lookup unavailable: ${formatForLog(error)}`);
+    respond(
+      false,
+      undefined,
+      errorShape(ErrorCodes.UNAVAILABLE, "session store is busy; retry shortly", {
+        details: { method },
+        retryable: true,
+        retryAfterMs: 500,
+      }),
+    );
+    return;
+  }
+  const { cfg, storePath, store, entry, canonicalKey } = loadedSession;
   const selectedAgent = validateChatSelectedAgent({
     cfg,
     requestedSessionKey: sessionKey,
