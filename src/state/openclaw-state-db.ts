@@ -147,7 +147,9 @@ const terminalOpenLatch = createSqliteTerminalOpenLatch({
     if (!cached) {
       return;
     }
-    cached.walMaintenance.close();
+    // PASSIVE: this fires while handling database damage — the worst moment to
+    // hold the write lock for a full busy_timeout against litestream's reader.
+    cached.walMaintenance.close({ checkpointMode: "PASSIVE" });
     clearNodeSqliteKyselyCacheForDatabase(cached.db);
     if (cached.db.isOpen) {
       cached.db.close();
@@ -1771,7 +1773,9 @@ export function openOpenClawStateDatabase(
   }
   if (cached) {
     // A closed handle can leave Kysely and WAL helpers cached; clear both before reopening.
-    cached.walMaintenance.close();
+    // PASSIVE for the same reason as the agent-DB reopen path: openclaw.sqlite is
+    // the most contended database in the process (#117262).
+    cached.walMaintenance.close({ checkpointMode: "PASSIVE" });
     clearNodeSqliteKyselyCacheForDatabase(cached.db);
     cachedDatabases.delete(pathname);
   }
@@ -1860,7 +1864,10 @@ export function runOpenClawStateWriteTransaction<T>(
 /** Close all cached shared state database handles. */
 export function closeOpenClawStateDatabase(): void {
   for (const database of cachedDatabases.values()) {
-    database.walMaintenance.close();
+    // PASSIVE: a TRUNCATE here waits out its full busy_timeout against
+    // litestream's attached reader on every shutdown, delaying drain; the
+    // remaining WAL frames are litestream's to sync either way.
+    database.walMaintenance.close({ checkpointMode: "PASSIVE" });
     clearNodeSqliteKyselyCacheForDatabase(database.db);
     if (database.db.isOpen) {
       database.db.close();
