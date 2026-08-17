@@ -874,6 +874,11 @@ export function repairOpenClawStateDatabaseSchema(options: OpenClawStateDatabase
   ensureOpenClawStatePermissions(pathname, env);
   const sqlite = requireNodeSqlite();
   const db = new sqlite.DatabaseSync(pathname);
+  // Default busy_timeout is 0: without this, any lock collision fails
+  // instantly with "database is locked". Litestream keeps a reader attached
+  // to every replicated database, so zero-grace opens on this path die during
+  // its boot-window and sync holds.
+  db.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
   try {
     assertSqliteIntegrity(db, pathname);
     assertSupportedSchemaVersion(db, pathname);
@@ -1006,6 +1011,9 @@ export function withOpenClawStateStartupMigrationCheckpointDatabase<T>(
   ensureOpenClawStatePermissions(pathname, env);
   const sqlite = requireNodeSqlite();
   const db = new sqlite.DatabaseSync(pathname);
+  // Same zero-grace hazard as the repair path above; upstream fixed the split
+  // successor of this function the same way (their #118022).
+  db.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
   try {
     assertSqliteIntegrity(db, pathname);
     ensureStartupMigrationCheckpointSchema(db, pathname);
