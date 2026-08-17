@@ -25,6 +25,7 @@ import { DEFAULT_ACCOUNT_ID, DEFAULT_MAIN_KEY, normalizeAgentId } from "../routi
 import {
   detectOpenClawStateDatabaseSchemaMigrations,
   repairOpenClawStateDatabaseSchema,
+  repairOpenClawStateDatabaseSchemaIfNeeded,
   type OpenClawStateDatabaseSchemaMigration,
 } from "../state/openclaw-state-db.js";
 import {
@@ -1099,7 +1100,10 @@ export async function autoMigrateLegacyState(params: {
     log: params.log,
   });
   const stateDir = resolveStateDir(env, params.homedir ?? os.homedir);
-  const stateSchema = repairOpenClawStateDatabaseSchema({
+  // Automatic preflight: probe read-only and skip the exclusive repair when the
+  // schema is already canonical. Explicit doctor repair paths above stay
+  // exhaustive. Fail-closed inside the helper.
+  const stateSchema = repairOpenClawStateDatabaseSchemaIfNeeded({
     env: { ...env, OPENCLAW_STATE_DIR: stateDir },
   });
   if (stateSchema.warnings.length > 0) {

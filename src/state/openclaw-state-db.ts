@@ -862,6 +862,52 @@ export function detectOpenClawStateDatabaseSchemaMigrations(
   }
 }
 
+/**
+ * Read-only probe first; enter the exclusive repair only when something is
+ * actually wrong. The unconditional repair runs a whole-database
+ * `PRAGMA integrity_check` plus a `BEGIN IMMEDIATE` transaction that rewrites
+ * the schema and stamps `schema_meta` — on every automatic preflight, on every
+ * process, even when the schema is already current. Under litestream that
+ * write transaction contends with the replicator's read mark during exactly
+ * the boot window we are trying to keep clear.
+ *
+ * Fail-closed: any read error, unsupported version, or noncanonical shape
+ * falls through to the full repair, so this can only skip work that provably
+ * had nothing to do. Explicit `doctor` repair paths stay exhaustive — this is
+ * only for the automatic path.
+ */
+export function repairOpenClawStateDatabaseSchemaIfNeeded(
+  options: OpenClawStateDatabaseOptions = {},
+): {
+  changes: string[];
+  warnings: string[];
+} {
+  const pathname = resolveDatabasePath(options);
+  if (!existsSync(pathname)) {
+    return { changes: [], warnings: [] };
+  }
+  let needsRepair = true;
+  const sqlite = requireNodeSqlite();
+  let probe: DatabaseSync | undefined;
+  try {
+    probe = new sqlite.DatabaseSync(pathname, { readOnly: true });
+    probe.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
+    assertSupportedSchemaVersion(probe, pathname);
+    needsRepair =
+      readSqliteUserVersion(probe) !== OPENCLAW_STATE_SCHEMA_VERSION ||
+      detectOpenClawStateDatabaseSchemaMigrations(options).length > 0;
+    if (!needsRepair) {
+      // Cheap structural confirmation; throws into the catch when noncanonical.
+      assertCanonicalStateSchemaShape(probe, pathname);
+    }
+  } catch {
+    needsRepair = true;
+  } finally {
+    probe?.close();
+  }
+  return needsRepair ? repairOpenClawStateDatabaseSchema(options) : { changes: [], warnings: [] };
+}
+
 export function repairOpenClawStateDatabaseSchema(options: OpenClawStateDatabaseOptions = {}): {
   changes: string[];
   warnings: string[];
