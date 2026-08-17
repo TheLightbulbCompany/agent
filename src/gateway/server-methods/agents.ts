@@ -52,7 +52,7 @@ import type { IdentityConfig } from "../../config/types.base.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { root, FsSafeError, type ReadResult } from "../../infra/fs-safe.js";
 import { movePathToTrash } from "../../plugin-sdk/browser-maintenance.js";
-import { DEFAULT_AGENT_ID, normalizeAgentId } from "../../routing/session-key.js";
+import { DEFAULT_AGENT_ID, isValidAgentId, normalizeAgentId } from "../../routing/session-key.js";
 import { isReservedSystemAgentId } from "../../system-agent/agent-id.js";
 import { resolveUserPath } from "../../utils.js";
 import { listAgentsForGateway } from "../session-utils.js";
@@ -520,6 +520,21 @@ export const agentsHandlers: GatewayRequestHandlers = {
 
     const cfg = context.getRuntimeConfig();
     const rawName = params.name.trim();
+    // `name` is the agent id, not a display label: it used to be slugified here,
+    // so a caller passing "Product Analytics Scorecard" minted an agent whose id
+    // was an LLM-chosen phrase. Require the id the caller wants, verbatim; set a
+    // human-readable label afterwards with agents.update.
+    if (!isValidAgentId(rawName) || normalizeAgentId(rawName) !== rawName) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `"${rawName.slice(0, 64)}" is not a canonical agent id. "name" must be the agent id itself: lowercase letters, digits, "_" and "-", starting with a letter or digit, at most 64 characters (a UUID qualifies). Pass the id you want, then use agents.update to set a display name.`,
+        ),
+      );
+      return;
+    }
     const agentId = normalizeAgentId(rawName);
     if (agentId === DEFAULT_AGENT_ID || isReservedSystemAgentId(agentId)) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, `"${agentId}" is reserved`));

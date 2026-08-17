@@ -529,7 +529,7 @@ describe("agents.create", () => {
 
   it("creates a new agent successfully", async () => {
     const { respond, promise } = makeCall("agents.create", {
-      name: "Test Agent",
+      name: "test-agent",
       workspace: "/home/user/agents/test",
     });
     await promise;
@@ -537,9 +537,50 @@ describe("agents.create", () => {
     expectRespondOk(respond, {
       ok: true,
       agentId: "test-agent",
-      name: "Test Agent",
+      name: "test-agent",
     });
     expect(mocks.ensureAgentWorkspace).toHaveBeenCalled();
+    expect(mocks.writeConfigFile).toHaveBeenCalled();
+  });
+
+  // The id is whatever `name` says, verbatim. Slugifying a display name here is
+  // what let an agent mint "product-analytics-scorecard" out of a phrase it
+  // chose, with no record of it anywhere but the container's own config.
+  it("accepts a UUID as the agent id and keeps it verbatim", async () => {
+    const uuid = "3f2b6c1e-9a4d-4f8b-8c7a-1d2e3f4a5b6c";
+    const { respond, promise } = makeCall("agents.create", {
+      name: uuid,
+      workspace: "/tmp/ws",
+    });
+    await promise;
+
+    expectRespondOk(respond, { ok: true, agentId: uuid, name: uuid });
+    expect(mocks.writeConfigFile).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a display name with spaces", "Product Analytics Scorecard"],
+    ["a slug that is not lowercase", "Product-Analytics"],
+    ["a UUID with uppercase hex", "3F2B6C1E-9A4D-4F8B-8C7A-1D2E3F4A5B6C"],
+    ["an id that does not start alphanumeric", "_scorecard"],
+    ["an id longer than 64 characters", "a".repeat(65)],
+  ])("rejects %s instead of slugifying it", async (_label, name) => {
+    const { respond, promise } = makeCall("agents.create", { name, workspace: "/tmp/ws" });
+    await promise;
+
+    expectRespondErrorContaining(respond, "is not a canonical agent id");
+    expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
+    expect(mocks.writeConfigFile).not.toHaveBeenCalled();
+  });
+
+  it("round-trips an already-canonical id with underscores and digits", async () => {
+    const { respond, promise } = makeCall("agents.create", {
+      name: "atlas_2-recruiter",
+      workspace: "/tmp/ws",
+    });
+    await promise;
+
+    expectRespondOk(respond, { ok: true, agentId: "atlas_2-recruiter" });
     expect(mocks.writeConfigFile).toHaveBeenCalled();
   });
 
@@ -554,7 +595,7 @@ describe("agents.create", () => {
     });
 
     const { promise } = makeCall("agents.create", {
-      name: "Order Test",
+      name: "order-test",
       workspace: "/tmp/ws",
     });
     await promise;
@@ -592,7 +633,7 @@ describe("agents.create", () => {
     mocks.findAgentEntryIndex.mockReturnValue(0);
 
     const { respond, promise } = makeCall("agents.create", {
-      name: "Existing",
+      name: "existing",
       workspace: "/tmp/ws",
     });
     await promise;
@@ -609,7 +650,7 @@ describe("agents.create", () => {
     });
 
     const { respond, promise } = makeCall("agents.create", {
-      name: "Race Agent",
+      name: "race-agent",
       workspace: "/tmp/ws",
     });
     await promise;
@@ -629,23 +670,23 @@ describe("agents.create", () => {
 
   it("writes identity to both config and IDENTITY.md", async () => {
     const { promise } = makeCall("agents.create", {
-      name: "Plain Agent",
+      name: "plain-agent",
       workspace: "/tmp/ws",
     });
     await promise;
 
     const configOptions = expectRecordFields(mockCallArg(mocks.applyAgentConfig, 0, 1), {});
-    expectRecordFields(configOptions.identity, { name: "Plain Agent" });
+    expectRecordFields(configOptions.identity, { name: "plain-agent" });
     const write = expectRecordFields(mockCallArg(mocks.rootWrite), {
       rootDir: "/resolved/tmp/ws",
       relativePath: "IDENTITY.md",
     });
-    expectStringContaining(write.data, "- Name: Plain Agent");
+    expectStringContaining(write.data, "- Name: plain-agent");
   });
 
   it("writes emoji and avatar to both config and IDENTITY.md", async () => {
     const { promise } = makeCall("agents.create", {
-      name: "Fancy Agent",
+      name: "fancy-agent",
       workspace: "/tmp/ws",
       emoji: "🤖",
       avatar: "https://example.com/avatar.png",
@@ -654,7 +695,7 @@ describe("agents.create", () => {
 
     const configOptions = expectRecordFields(mockCallArg(mocks.applyAgentConfig, 0, 1), {});
     expectRecordFields(configOptions.identity, {
-      name: "Fancy Agent",
+      name: "fancy-agent",
       emoji: "🤖",
       avatar: "https://example.com/avatar.png",
     });
@@ -666,7 +707,7 @@ describe("agents.create", () => {
       [
         "# IDENTITY.md - Agent Identity",
         "",
-        "- Name: Fancy Agent",
+        "- Name: fancy-agent",
         "- Emoji: 🤖",
         "- Avatar: https://example.com/avatar.png",
         "",
@@ -680,7 +721,7 @@ describe("agents.create", () => {
     );
 
     const { respond, promise } = makeCall("agents.create", {
-      name: "Unsafe Agent",
+      name: "unsafe-agent",
       workspace: "/tmp/ws",
     });
     await promise;
@@ -703,7 +744,7 @@ describe("agents.create", () => {
     });
 
     const { promise } = makeCall("agents.create", {
-      name: "Unreadable Identity",
+      name: "unreadable-identity",
       workspace: "/tmp/ws",
     });
 
@@ -722,7 +763,7 @@ describe("agents.create", () => {
     });
 
     const { respond, promise } = makeCall("agents.create", {
-      name: "Unsafe Identity Read",
+      name: "unsafe-identity-read",
       workspace: "/tmp/ws",
     });
     await promise;
@@ -739,7 +780,7 @@ describe("agents.create", () => {
     agentsTesting.setDepsForTests({ root: makeRootForTest({ read: rootRead }) });
 
     const { promise } = makeCall("agents.create", {
-      name: "NB Agent",
+      name: "nb-agent",
       workspace: "/tmp/ws",
     });
     await promise;
@@ -752,7 +793,7 @@ describe("agents.create", () => {
 
   it("passes model to applyAgentConfig when provided", async () => {
     const { respond, promise } = makeCall("agents.create", {
-      name: "Model Agent",
+      name: "model-agent",
       workspace: "/tmp/ws",
       model: "sonnet-4.6",
     });

@@ -97,7 +97,12 @@ export const AgentsListResultSchema = closedObject({
   agents: Type.Array(AgentSummarySchema),
 });
 
-/** Creates a configured agent with workspace, identity, and optional model. */
+/**
+ * Creates a configured agent with workspace, identity, and optional model.
+ * `name` is the agent id itself and must already be canonical (lowercase
+ * `[a-z0-9_-]`, leading alphanumeric, <= 64 chars; a UUID qualifies). Set a
+ * human-readable display name afterwards with `agents.update`.
+ */
 export const AgentsCreateParamsSchema = closedObject({
   name: NonEmptyString,
   workspace: NonEmptyString,
