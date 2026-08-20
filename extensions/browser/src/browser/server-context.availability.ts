@@ -54,6 +54,7 @@ import type {
   ProfileContext,
   ProfileRuntimeState,
 } from "./server-context.types.js";
+import { restoreManagedBrowserSessionState } from "./session-state-launch.js";
 
 type AvailabilityDeps = {
   opts: ContextOptions;
@@ -524,6 +525,15 @@ export function createProfileAvailability({
           recordManagedLaunchFailure(runtime, err);
         }
         throw err;
+      }
+      // CDP is up and the process adopted. Restore any persisted session state
+      // (cookies + per-origin localStorage) before the browser serves its first
+      // navigation. Best-effort and self-swallowing: a bad/absent snapshot must
+      // never block a healthy launch (guarded here too for belt-and-suspenders).
+      try {
+        await restoreManagedBrowserSessionState({ profile, resolved: current.resolved });
+      } catch {
+        // session-state restore never blocks launch
       }
       return;
     }
