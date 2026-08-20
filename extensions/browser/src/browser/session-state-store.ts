@@ -222,9 +222,20 @@ function toCookieParam(cookie: unknown): SessionCookie | null {
   if (typeof copy.name !== "string" || typeof copy.value !== "string") {
     return null;
   }
-  // `size` and `session` are read-only Cookie fields, not accepted as params.
+  // `size`, `session`, and `partitionKeyOpaque` are read-only Cookie fields,
+  // not accepted as Network.CookieParam (partitionKeyOpaque rejection breaks
+  // CHIPS/partitioned cookies in the bulk call).
   delete copy.size;
   delete copy.session;
+  delete copy.partitionKeyOpaque;
+  // Storage.getCookies marks a session cookie with `expires: -1`. Storage.setCookies
+  // has NO -1=session convention — it reads -1 as a 1969 expiry, i.e. an
+  // already-expired cookie it silently drops. Omitting `expires` is how CDP
+  // expresses a session cookie (matches system-chrome-cookies.ts). Without this,
+  // every session cookie — exactly what keeps a user logged in — is lost on restore.
+  if (typeof copy.expires !== "number" || copy.expires <= 0) {
+    delete copy.expires;
+  }
   return copy;
 }
 

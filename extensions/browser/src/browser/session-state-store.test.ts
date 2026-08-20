@@ -153,6 +153,57 @@ describe("restoreSessionState", () => {
     expect(setItemsExpr).toContain("localStorage.setItem");
   });
 
+  it("normalizes a session cookie's expires:-1 so Chrome stores it (not drops it)", async () => {
+    // Storage.getCookies returns expires:-1 for session cookies; Storage.setCookies
+    // reads -1 as a 1969 expiry and silently drops the cookie. The param must OMIT
+    // `expires` (CDP's session-cookie form) instead, or every login cookie is lost.
+    const cookies = [
+      {
+        name: "session_sid",
+        value: "s",
+        domain: "e.com",
+        path: "/",
+        expires: -1,
+        size: 20,
+        session: true,
+        partitionKeyOpaque: false,
+      },
+      { name: "persist", value: "p", domain: "e.com", path: "/", expires: 9999999999 },
+    ];
+    const filePath = path.join(tmpDir, "state.json");
+    await fs.writeFile(
+      filePath,
+      JSON.stringify({
+        version: SESSION_STATE_VERSION,
+        savedAt: new Date().toISOString(),
+        cookies,
+        origins: [],
+      }),
+    );
+
+    let setCookiesArg: Array<Record<string, unknown>> | undefined;
+    const send = mockSend({
+      "Storage.setCookies": (params) => {
+        setCookiesArg = params?.cookies as Array<Record<string, unknown>>;
+        return {};
+      },
+    });
+
+    const result = await restoreSessionState(send, filePath);
+    expect(result).toEqual({ cookies: 2, origins: 0 });
+    const session = setCookiesArg?.find((c) => c.name === "session_sid") as Record<string, unknown>;
+    const persist = setCookiesArg?.find((c) => c.name === "persist") as Record<string, unknown>;
+    // session cookie: expires removed (Chrome would drop it if left at -1)
+    expect(session).toBeDefined();
+    expect("expires" in session).toBe(false);
+    // read-only Cookie fields stripped so the bulk setCookies is not rejected
+    expect("size" in session).toBe(false);
+    expect("session" in session).toBe(false);
+    expect("partitionKeyOpaque" in session).toBe(false);
+    // persistent cookie: real future expiry preserved
+    expect(persist?.expires).toBe(9999999999);
+  });
+
   it("continues past a rejected cookie (per-item tolerance)", async () => {
     const cookies = [
       { name: "good", value: "1", domain: "e.com", path: "/" },
