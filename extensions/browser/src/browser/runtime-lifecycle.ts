@@ -6,6 +6,7 @@ import { getExtensionRelayModule } from "./extension-relay.runtime.js";
 import type { BrowserServerState } from "./server-context.js";
 import { markBrowserRuntimeStopping } from "./server-context.lifecycle.js";
 import { stopKnownBrowserProfiles } from "./server-lifecycle.js";
+import { startBrowserSessionStateSnapshotTimer } from "./session-state-launch.js";
 import { startTrackedBrowserTabCleanupTimer } from "./session-tab-cleanup.js";
 import { registerBrowserUnhandledRejectionHandler } from "./unhandled-rejections.js";
 
@@ -17,6 +18,7 @@ type CreateBrowserRuntimeStateParams = {
 };
 
 const trackedTabCleanupDisposers = new WeakMap<BrowserServerState, () => Promise<void>>();
+const sessionStateSnapshotDisposers = new WeakMap<BrowserServerState, () => Promise<void>>();
 
 /** Creates Browser server state and starts runtime-wide cleanup handlers. */
 export async function createBrowserRuntimeState(
@@ -35,6 +37,11 @@ export async function createBrowserRuntimeState(
   trackedTabCleanupDisposers.set(state, stopTrackedTabCleanup);
   state.stopTrackedTabCleanup = () => {
     void stopTrackedTabCleanup().catch(() => {});
+  };
+  const stopSessionStateSnapshot = startBrowserSessionStateSnapshotTimer({ state });
+  sessionStateSnapshotDisposers.set(state, stopSessionStateSnapshot);
+  state.stopSessionStateSnapshot = () => {
+    void stopSessionStateSnapshot().catch(() => {});
   };
   state.stopUnhandledRejectionHandler = registerBrowserUnhandledRejectionHandler();
   return state;
@@ -76,7 +83,15 @@ async function stopBrowserRuntimeInternal(
       current.stopTrackedTabCleanup?.();
     }
   });
-  for (const result of await Promise.allSettled([profileDrain, tabCleanup])) {
+  const stopSessionStateSnapshot = sessionStateSnapshotDisposers.get(current);
+  const sessionStateSnapshot = Promise.resolve().then(async () => {
+    if (stopSessionStateSnapshot) {
+      await stopSessionStateSnapshot();
+    } else {
+      current.stopSessionStateSnapshot?.();
+    }
+  });
+  for (const result of await Promise.allSettled([profileDrain, tabCleanup, sessionStateSnapshot])) {
     if (result.status === "rejected") {
       firstError ??= toRuntimeLifecycleError(result.reason, "Browser profile cleanup failed.");
     }
@@ -110,6 +125,7 @@ async function stopBrowserRuntimeInternal(
 
     params.clearState();
     trackedTabCleanupDisposers.delete(current);
+    sessionStateSnapshotDisposers.delete(current);
     current.stopUnhandledRejectionHandler?.();
   }
   if (firstError) {

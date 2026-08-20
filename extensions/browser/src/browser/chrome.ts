@@ -80,6 +80,9 @@ import {
 import { BROWSER_ERROR_REASONS, BrowserProfileUnavailableError } from "./errors.js";
 import { ensureOutputDirectory } from "./output-directories.js";
 import { DEFAULT_DOWNLOAD_DIR } from "./paths.js";
+// Call-time reference only (invoked inside requestGracefulChromeClose); the
+// resulting chrome.js <-> session-state-launch.js import cycle is benign.
+import { snapshotSessionStateViaSend } from "./session-state-launch.js";
 
 const log = createSubsystemLogger("browser").child("chrome");
 const CHROME_SINGLETON_LOCK_PATHS = [
@@ -1376,6 +1379,11 @@ async function requestGracefulChromeClose(
         if (!cdpProcessListOwnsBrowser(processInfo, running.pid)) {
           return;
         }
+        // Best-effort session-state snapshot using the socket we already hold,
+        // before the browser tears down. Config-gated and self-swallowing; a
+        // Fargate kill is not graceful, so the periodic timer is the primary
+        // durability path and this is a bonus that must never delay the close.
+        await snapshotSessionStateViaSend(send);
         commandSent = true;
         await send("Browser.close");
       },

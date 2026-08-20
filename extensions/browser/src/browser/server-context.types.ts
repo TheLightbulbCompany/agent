@@ -44,6 +44,7 @@ export type BrowserServerState = {
   /** Running extension relay servers keyed by profile name (extension driver). */
   extensionRelays?: Map<string, ExtensionRelayHandle>;
   stopTrackedTabCleanup?: () => void;
+  stopSessionStateSnapshot?: () => void;
   stopUnhandledRejectionHandler?: () => void;
 };
 
