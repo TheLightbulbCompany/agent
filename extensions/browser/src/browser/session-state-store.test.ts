@@ -50,7 +50,7 @@ describe("snapshotSessionState", () => {
           { type: "service_worker", targetId: "t5", url: "https://sw.example.com/" },
         ],
       }),
-      "Target.attachToTarget": (params) => ({ sessionId: `sess-${params?.targetId}` }),
+      "Target.attachToTarget": (params) => ({ sessionId: `sess-${String(params?.targetId)}` }),
       "Runtime.evaluate": () => ({ result: { value: { token: "xyz", n: 5 } } }),
       "Target.detachFromTarget": () => ({}),
     });
@@ -136,7 +136,7 @@ describe("restoreSessionState", () => {
       "Target.createTarget": () => ({ targetId: "t1" }),
       "Target.attachToTarget": () => ({ sessionId: "s1" }),
       "Runtime.evaluate": (params) => {
-        const expr = String(params?.expression ?? "");
+        const expr = typeof params?.expression === "string" ? params.expression : "";
         if (expr.includes("location.origin")) {
           return { result: { value: "https://example.com" } };
         }
