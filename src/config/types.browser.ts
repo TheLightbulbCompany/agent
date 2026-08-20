@@ -38,6 +38,18 @@ export type BrowserTabCleanupConfig = {
   /** Cleanup sweep interval in minutes. Default: 5 */
   sweepMinutes?: number;
 };
+export type BrowserSessionStateConfig = {
+  /**
+   * Persist cookies + per-origin localStorage to a single JSON so logged-in
+   * sessions survive a browser/container restart. Default: false (adding this
+   * block turns it on; set enabled:false to disable while keeping the block).
+   */
+  enabled?: boolean;
+  /** Snapshot interval in seconds while a managed browser is running. Default: 60. */
+  intervalSeconds?: number;
+  /** Snapshot file path (supports leading ~). Default: ~/.openclaw/browser-state/state.json */
+  path?: string;
+};
 export type BrowserSsrFPolicyConfig = {
   /** If true, permit browser navigation to private/internal networks. Default: false */
   dangerouslyAllowPrivateNetwork?: boolean;
@@ -90,6 +102,8 @@ export type BrowserConfig = {
   snapshotDefaults?: BrowserSnapshotDefaults;
   /** Best-effort cleanup policy for tabs opened by primary-agent browser sessions. */
   tabCleanup?: BrowserTabCleanupConfig;
+  /** Persist/restore cookies + per-origin localStorage across browser restarts. */
+  sessionState?: BrowserSessionStateConfig;
   /** SSRF policy for browser navigation/open-tab operations. */
   ssrfPolicy?: BrowserSsrFPolicyConfig;
   /**

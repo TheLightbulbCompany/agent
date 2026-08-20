@@ -267,6 +267,13 @@ export const OpenClawSchemaShape = {
           sweepMinutes: z.number().int().positive().optional(),
         })
         .optional(),
+      sessionState: z
+        .strictObject({
+          enabled: z.boolean().optional(),
+          intervalSeconds: z.number().int().positive().max(86_400).optional(),
+          path: z.string().optional(),
+        })
+        .optional(),
     })
     .optional(),
   ui: z
