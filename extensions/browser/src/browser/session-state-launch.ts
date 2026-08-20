@@ -11,7 +11,10 @@ import type { CdpSendFn } from "./cdp.helpers.js";
 import { withCdpSocket } from "./cdp.helpers.js";
 import { getChromeWebSocketUrl } from "./chrome.js";
 import type { ResolvedBrowserConfig, ResolvedBrowserProfile } from "./config.js";
+import { getBrowserProfileCapabilities } from "./profile-capabilities.js";
+import type { BrowserServerState } from "./server-context.types.js";
 import {
+  type ResolvedSessionStateConfig,
   resolveSessionStateConfig,
   restoreSessionState,
   snapshotSessionState,
@@ -101,4 +104,112 @@ export async function snapshotManagedBrowserSessionState(
   } catch (err) {
     log.warn(`session-state snapshot failed (continuing): ${String(err)}`);
   }
+}
+
+/**
+ * Best-effort snapshot using an already-open browser-level CDP send. Used on the
+ * graceful-shutdown path where the close handler already holds the socket, so
+ * there is no need to re-resolve one. Never throws.
+ */
+export async function snapshotSessionStateViaSend(send: CdpSendFn): Promise<void> {
+  const config = readSessionStateConfig();
+  if (!config.enabled) {
+    return;
+  }
+  try {
+    await snapshotSessionState(send, config.path);
+  } catch (err) {
+    log.warn(`session-state shutdown snapshot failed (continuing): ${String(err)}`);
+  }
+}
+
+/** Snapshot every running local-managed browser once (skips idle/remote/extension). */
+async function snapshotRunningManagedBrowsers(
+  state: BrowserServerState,
+  snapshotProfile: (params: ManagedSessionStateParams) => Promise<void>,
+): Promise<void> {
+  for (const runtime of state.profiles.values()) {
+    if (!runtime.running) {
+      continue;
+    }
+    // Only OpenClaw's own managed Chrome persists via this JSON. Never touch the
+    // user's real browser (extension), a remote CDP, or an existing-session box.
+    if (getBrowserProfileCapabilities(runtime.profile).mode !== "local-managed") {
+      continue;
+    }
+    await snapshotProfile({ profile: runtime.profile, resolved: state.resolved });
+  }
+}
+
+/**
+ * Start the periodic session-state snapshot timer. Fires only while a managed
+ * browser is running (no wake-spam when idle) and reschedules from config each
+ * tick so a hot-reloaded interval/enable takes effect. Fargate task kills are
+ * not graceful, so this timer — not the shutdown hook — is the primary
+ * durability mechanism. Returns a disposer.
+ *
+ * `snapshotProfile` and `resolveConfig` are injectable for tests.
+ */
+export function startBrowserSessionStateSnapshotTimer(params: {
+  state: BrowserServerState;
+  snapshotProfile?: (p: ManagedSessionStateParams) => Promise<void>;
+  resolveConfig?: () => ResolvedSessionStateConfig;
+}): () => Promise<void> {
+  const snapshotProfile = params.snapshotProfile ?? snapshotManagedBrowserSessionState;
+  const resolveConfig = params.resolveConfig ?? readSessionStateConfig;
+  let stopped = false;
+  let timer: NodeJS.Timeout | null = null;
+  let running: Promise<unknown> | null = null;
+
+  const schedule = () => {
+    if (stopped) {
+      return;
+    }
+    let intervalMs = 60_000;
+    try {
+      intervalMs = resolveConfig().intervalMs;
+    } catch (err) {
+      log.warn(`failed to resolve session-state interval: ${String(err)}`);
+    }
+    timer = setTimeout(run, intervalMs);
+    timer.unref?.();
+  };
+
+  const run = () => {
+    if (stopped) {
+      return;
+    }
+    if (running) {
+      schedule();
+      return;
+    }
+    let enabled = false;
+    try {
+      enabled = resolveConfig().enabled;
+    } catch {
+      // resolve failure ⇒ treat as disabled this tick
+    }
+    if (!enabled) {
+      schedule();
+      return;
+    }
+    running = snapshotRunningManagedBrowsers(params.state, snapshotProfile)
+      .catch((err: unknown) => {
+        log.warn(`session-state snapshot sweep failed: ${String(err)}`);
+      })
+      .finally(() => {
+        running = null;
+        schedule();
+      });
+  };
+
+  schedule();
+  return async () => {
+    stopped = true;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    await running?.catch(() => {});
+  };
 }
