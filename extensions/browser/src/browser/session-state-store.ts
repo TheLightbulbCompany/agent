@@ -13,6 +13,7 @@
  */
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { CdpSendFn } from "./cdp.helpers.js";
 
@@ -21,6 +22,55 @@ export const SESSION_STATE_VERSION = 1;
 /** How long to wait for a throwaway restore tab to commit on its origin. */
 const ORIGIN_COMMIT_ATTEMPTS = 8;
 const ORIGIN_COMMIT_POLL_MS = 250;
+
+const DEFAULT_SNAPSHOT_PATH = "~/.openclaw/browser-state/state.json";
+const DEFAULT_INTERVAL_SECONDS = 60;
+const MIN_INTERVAL_SECONDS = 15;
+
+export type SessionStateConfig = {
+  enabled?: boolean;
+  intervalSeconds?: number;
+  path?: string;
+};
+
+export type ResolvedSessionStateConfig = {
+  enabled: boolean;
+  intervalMs: number;
+  path: string;
+};
+
+/** Expand a leading `~`/`~/` against the process home dir. */
+function expandHome(input: string): string {
+  if (input === "~") {
+    return os.homedir();
+  }
+  if (input.startsWith("~/") || input.startsWith("~\\")) {
+    return path.join(os.homedir(), input.slice(2));
+  }
+  return input;
+}
+
+/**
+ * Resolve the browser.sessionState config with defaults. Presence of the block
+ * turns the feature on (enabled defaults true); set enabled:false to keep the
+ * block but disable it. Interval is floored to avoid wake-spam.
+ */
+export function resolveSessionStateConfig(
+  sessionState?: SessionStateConfig | null,
+): ResolvedSessionStateConfig {
+  const enabled = sessionState != null && sessionState.enabled !== false;
+  const rawInterval = sessionState?.intervalSeconds;
+  const intervalSeconds =
+    typeof rawInterval === "number" && Number.isFinite(rawInterval)
+      ? Math.max(MIN_INTERVAL_SECONDS, Math.floor(rawInterval))
+      : DEFAULT_INTERVAL_SECONDS;
+  const rawPath = typeof sessionState?.path === "string" ? sessionState.path.trim() : "";
+  return {
+    enabled,
+    intervalMs: intervalSeconds * 1000,
+    path: expandHome(rawPath || DEFAULT_SNAPSHOT_PATH),
+  };
+}
 
 type SessionCookie = Record<string, unknown>;
 type OriginState = { origin: string; localStorage: Record<string, string> };
