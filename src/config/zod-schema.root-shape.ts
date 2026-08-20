@@ -207,6 +207,13 @@ export const OpenClawSchemaShape = {
           allowLegacyAuth: z.boolean().optional(),
         })
         .optional(),
+      sessionState: z
+        .strictObject({
+          enabled: z.boolean().optional(),
+          intervalSeconds: z.number().int().positive().max(86_400).optional(),
+          path: z.string().optional(),
+        })
+        .optional(),
     })
     .optional(),
   ui: z
