@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CdpSendFn } from "./cdp.helpers.js";
 import {
+  resolveSessionStateConfig,
   restoreSessionState,
   SESSION_STATE_VERSION,
   snapshotSessionState,
@@ -182,5 +183,27 @@ describe("restoreSessionState", () => {
     const result = await restoreSessionState(send, filePath);
     expect(bulkTried).toBe(true);
     expect(result).toEqual({ cookies: 1, origins: 0 });
+  });
+});
+
+describe("resolveSessionStateConfig", () => {
+  it("defaults to disabled with a home-expanded path when no config is set", () => {
+    const resolved = resolveSessionStateConfig(undefined);
+    expect(resolved.enabled).toBe(false);
+    expect(resolved.intervalMs).toBe(60_000);
+    expect(resolved.path.endsWith("/.openclaw/browser-state/state.json")).toBe(true);
+    expect(resolved.path.startsWith("~")).toBe(false);
+  });
+
+  it("enables on presence and honors interval + custom path", () => {
+    const resolved = resolveSessionStateConfig({ intervalSeconds: 30, path: "/data/state.json" });
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.intervalMs).toBe(30_000);
+    expect(resolved.path).toBe("/data/state.json");
+  });
+
+  it("floors the interval to avoid wake-spam and honors enabled:false", () => {
+    expect(resolveSessionStateConfig({ intervalSeconds: 1 }).intervalMs).toBe(15_000);
+    expect(resolveSessionStateConfig({ enabled: false }).enabled).toBe(false);
   });
 });

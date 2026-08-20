@@ -33,6 +33,18 @@ export type BrowserTabCleanupConfig = {
   /** Enable best-effort cleanup for tracked primary-agent browser tabs. Default: true */
   enabled?: boolean;
 };
+export type BrowserSessionStateConfig = {
+  /**
+   * Persist cookies + per-origin localStorage to a single JSON so logged-in
+   * sessions survive a browser/container restart. Default: false (adding this
+   * block turns it on; set enabled:false to disable while keeping the block).
+   */
+  enabled?: boolean;
+  /** Snapshot interval in seconds while a managed browser is running. Default: 60. */
+  intervalSeconds?: number;
+  /** Snapshot file path (supports leading ~). Default: ~/.openclaw/browser-state/state.json */
+  path?: string;
+};
 export type BrowserExtensionRelayConfig = {
   /** Temporarily accept legacy relay bearer/basic/subprotocol auth. Default: true. */
   allowLegacyAuth?: boolean;
@@ -66,6 +78,8 @@ export type BrowserConfig = {
   tabCleanup?: BrowserTabCleanupConfig;
   /** Chrome extension relay authentication compatibility settings. */
   extensionRelay?: BrowserExtensionRelayConfig;
+  /** Persist/restore cookies + per-origin localStorage across browser restarts. */
+  sessionState?: BrowserSessionStateConfig;
   /** SSRF policy for browser navigation/open-tab operations. */
   ssrfPolicy?: BrowserSsrFPolicyConfig;
   /**
