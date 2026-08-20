@@ -3,7 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CdpSendFn } from "./cdp.helpers.js";
-import { SESSION_STATE_VERSION, snapshotSessionState } from "./session-state-store.js";
+import {
+  restoreSessionState,
+  SESSION_STATE_VERSION,
+  snapshotSessionState,
+} from "./session-state-store.js";
 
 let tmpDir: string;
 
@@ -80,5 +84,103 @@ describe("snapshotSessionState", () => {
     const leftovers = (await fs.readdir(tmpDir)).filter((f) => f.endsWith(".tmp"));
     expect(leftovers).toEqual([]);
     expect((await fs.stat(dirTarget)).isDirectory()).toBe(true);
+  });
+});
+
+describe("restoreSessionState", () => {
+  it("returns null when the snapshot file is absent (no CDP calls)", async () => {
+    const calls: string[] = [];
+    const send: CdpSendFn = async (method) => {
+      calls.push(method);
+      return {};
+    };
+    const result = await restoreSessionState(send, path.join(tmpDir, "missing.json"));
+    expect(result).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it("returns null on a version mismatch (no CDP calls)", async () => {
+    const calls: string[] = [];
+    const send: CdpSendFn = async (method) => {
+      calls.push(method);
+      return {};
+    };
+    const filePath = path.join(tmpDir, "state.json");
+    await fs.writeFile(filePath, JSON.stringify({ version: 999, cookies: [], origins: [] }));
+    const result = await restoreSessionState(send, filePath);
+    expect(result).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it("restores cookies and per-origin localStorage from a v1 file", async () => {
+    const cookies = [{ name: "sid", value: "abc", domain: "example.com", path: "/" }];
+    const filePath = path.join(tmpDir, "state.json");
+    await fs.writeFile(
+      filePath,
+      JSON.stringify({
+        version: SESSION_STATE_VERSION,
+        savedAt: new Date().toISOString(),
+        cookies,
+        origins: [{ origin: "https://example.com", localStorage: { token: "xyz" } }],
+      }),
+    );
+
+    let setCookiesArg: unknown;
+    let setItemsExpr: string | undefined;
+    const send = mockSend({
+      "Storage.setCookies": (params) => {
+        setCookiesArg = params?.cookies;
+        return {};
+      },
+      "Target.createTarget": () => ({ targetId: "t1" }),
+      "Target.attachToTarget": () => ({ sessionId: "s1" }),
+      "Runtime.evaluate": (params) => {
+        const expr = String(params?.expression ?? "");
+        if (expr.includes("location.origin")) {
+          return { result: { value: "https://example.com" } };
+        }
+        setItemsExpr = expr;
+        return { result: { value: 1 } };
+      },
+      "Target.closeTarget": () => ({}),
+    });
+
+    const result = await restoreSessionState(send, filePath);
+    expect(result).toEqual({ cookies: 1, origins: 1 });
+    expect(setCookiesArg).toEqual(cookies);
+    expect(setItemsExpr).toContain("token");
+    expect(setItemsExpr).toContain("localStorage.setItem");
+  });
+
+  it("continues past a rejected cookie (per-item tolerance)", async () => {
+    const cookies = [
+      { name: "good", value: "1", domain: "e.com", path: "/" },
+      { name: "bad", value: "2", domain: "e.com", path: "/" },
+    ];
+    const filePath = path.join(tmpDir, "state.json");
+    await fs.writeFile(
+      filePath,
+      JSON.stringify({ version: SESSION_STATE_VERSION, savedAt: "x", cookies, origins: [] }),
+    );
+
+    let bulkTried = false;
+    const send: CdpSendFn = async (method, params) => {
+      if (method !== "Storage.setCookies") {
+        throw new Error(`unexpected CDP method: ${method}`);
+      }
+      const arr = (params as { cookies?: Array<{ name?: string }> })?.cookies ?? [];
+      if (arr.length > 1) {
+        bulkTried = true;
+        throw new Error("bulk rejected");
+      }
+      if (arr[0]?.name === "bad") {
+        throw new Error("bad cookie");
+      }
+      return {};
+    };
+
+    const result = await restoreSessionState(send, filePath);
+    expect(bulkTried).toBe(true);
+    expect(result).toEqual({ cookies: 1, origins: 0 });
   });
 });
