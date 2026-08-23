@@ -1066,3 +1066,88 @@ describe("MCP OAuth provider", () => {
     );
   });
 });
+
+describe("externally seeded legacy store import (fork)", () => {
+  // Sibling describe: the reset in "MCP OAuth provider" does not reach here, so
+  // authMock would otherwise carry call counts from every preceding test.
+  beforeEach(() => {
+    authMock.mockReset();
+    closeOpenClawStateDatabaseForTest();
+  });
+  afterEach(() => closeOpenClawStateDatabaseForTest());
+
+  const SERVER_NAME = "stripe";
+  const SERVER_URL = "https://mcp.stripe.example/mcp";
+  const TEMP_HOME_OPTIONS = {
+    prefix: "openclaw-mcp-oauth-seeded-",
+    skipSessionCleanup: true,
+    env: {
+      OPENCLAW_CONFIG_PATH: undefined,
+      OPENCLAW_STATE_DIR: undefined,
+    },
+  } as const;
+
+  function storeKey(): string {
+    return operatorMcpOAuthIdentity(SERVER_NAME, SERVER_URL).storeKey;
+  }
+
+  async function seedLegacyFile(value: unknown): Promise<string> {
+    const legacyPath = path.join(
+      process.env.OPENCLAW_STATE_DIR ?? "",
+      "mcp-oauth",
+      `${storeKey()}.json`,
+    );
+    await fs.mkdir(path.dirname(legacyPath), { recursive: true });
+    await fs.writeFile(
+      legacyPath,
+      typeof value === "string" ? value : JSON.stringify(value),
+      "utf8",
+    );
+    return legacyPath;
+  }
+
+  it("imports a seeded legacy file at token resolution and removes it", async () => {
+    await withTempHome(async () => {
+      const legacyPath = await seedLegacyFile({
+        tokens: { access_token: "seeded-token", token_type: "Bearer" },
+      });
+
+      const token = await resolveMcpOAuthAccessToken({
+        identity: operatorMcpOAuthIdentity(SERVER_NAME, SERVER_URL),
+      });
+
+      expect(token).toBe("seeded-token");
+      expect(readMcpOAuthStore(storeKey()).tokens?.access_token).toBe("seeded-token");
+      await expect(fs.access(legacyPath)).rejects.toThrow();
+      expect(authMock).not.toHaveBeenCalled();
+    }, TEMP_HOME_OPTIONS);
+  });
+
+  it("leaves resolution unchanged when no legacy file exists", async () => {
+    await withTempHome(async () => {
+      await expect(
+        resolveMcpOAuthAccessToken({
+          identity: operatorMcpOAuthIdentity(SERVER_NAME, SERVER_URL),
+          allowMissingToken: true,
+        }),
+      ).resolves.toBeUndefined();
+      expect(readMcpOAuthStore(storeKey()).tokens).toBeUndefined();
+    }, TEMP_HOME_OPTIONS);
+  });
+
+  it("leaves a corrupt seeded file in place without failing resolution", async () => {
+    await withTempHome(async () => {
+      const legacyPath = await seedLegacyFile("not json {");
+
+      await expect(
+        resolveMcpOAuthAccessToken({
+          identity: operatorMcpOAuthIdentity(SERVER_NAME, SERVER_URL),
+          allowMissingToken: true,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(readMcpOAuthStore(storeKey()).tokens).toBeUndefined();
+      await expect(fs.access(legacyPath)).resolves.toBeUndefined();
+    }, TEMP_HOME_OPTIONS);
+  });
+});
