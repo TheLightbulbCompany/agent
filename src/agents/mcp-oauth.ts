@@ -2,6 +2,7 @@
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { importLegacyMcpOAuthStoreFile } from "../infra/state-migrations.mcp-oauth.js";
 import {
   type OpenClawStateLeaseContext,
   withOpenClawStateLease,
@@ -132,6 +133,10 @@ export async function resolveMcpOAuthAccessToken(
   return await withMcpOAuthLease(
     storeKey,
     async (lease) => {
+      // Isol8 fork: the backend seeds tokens for headless containers as legacy
+      // JSON store files. Import inside the lease so a file written while the
+      // gateway is running is picked up on the next connect attempt.
+      importLegacyMcpOAuthStoreFile(storeKey, bindMcpOAuthLeaseAssertion(lease));
       const store = readMcpOAuthStore(storeKey);
       const tokens = store.tokens;
       const rejectedCurrentToken = params.rejectedAccessToken === tokens?.access_token;

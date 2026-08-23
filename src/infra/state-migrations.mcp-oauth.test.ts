@@ -550,7 +550,7 @@ describe("legacy MCP OAuth Doctor migration", () => {
     expect(receipt(env)).toBeUndefined();
   });
 
-  it("uses the receipt for cleanup-only retries and cannot resurrect deleted canonical state", async () => {
+  it("imports a recreated file at a receipted path and still cleans up stale claims", async () => {
     const { env, stateDir } = useStateDir();
     const sourcePath = await writeLegacy({ stateDir });
     const first = await migrate(stateDir, env, {
@@ -566,8 +566,31 @@ describe("legacy MCP OAuth Doctor migration", () => {
     deleteCanonical(env);
     await writeLegacy({
       stateDir,
-      value: validStore({ tokens: { access_token: "decoy-token", token_type: "Bearer" } }),
+      value: validStore({ tokens: { access_token: "reseeded-token", token_type: "Bearer" } }),
     });
+    const retry = await migrate(stateDir, env);
+
+    expect(retry.warnings).toEqual([]);
+    expect(retry.changes).toContain("Imported recreated retired MCP OAuth JSON into SQLite.");
+    const row = storeRow(env);
+    expect(row).toBeDefined();
+    const imported = JSON.parse(row?.store_json ?? "{}") as Record<string, unknown>;
+    expect((imported.tokens as Record<string, unknown>).access_token).toBe("reseeded-token");
+    expect(imported.state).toBeUndefined();
+    expect(fs.existsSync(sourcePath)).toBe(false);
+    expect(fs.existsSync(`${sourcePath}.doctor-importing`)).toBe(false);
+    expect(receipt(env, sourcePath)).toMatchObject({ removed_source: 1 });
+  });
+
+  it("discards an unparseable recreated file at a receipted path without importing it", async () => {
+    const { env, stateDir } = useStateDir();
+    const sourcePath = await writeLegacy({ stateDir });
+    const first = await migrate(stateDir, env);
+    expect(first.warnings).toEqual([]);
+    expect(receipt(env, sourcePath)).toMatchObject({ removed_source: 1 });
+
+    deleteCanonical(env);
+    await writeLegacy({ stateDir, bytes: Buffer.from("not json {", "utf8") });
     const retry = await migrate(stateDir, env);
 
     expect(retry.warnings).toEqual([]);
@@ -576,8 +599,6 @@ describe("legacy MCP OAuth Doctor migration", () => {
     );
     expect(storeRow(env)).toBeUndefined();
     expect(fs.existsSync(sourcePath)).toBe(false);
-    expect(fs.existsSync(`${sourcePath}.doctor-importing`)).toBe(false);
-    expect(receipt(env, sourcePath)).toMatchObject({ removed_source: 1 });
   });
 
   it("rejects symlinked, hardlinked, oversized, and invalid-UTF-8 sources", async () => {

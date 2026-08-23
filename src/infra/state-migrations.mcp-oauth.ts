@@ -1,9 +1,17 @@
-// Doctor-only import for retired per-server MCP OAuth JSON stores.
+// Doctor import for retired per-server MCP OAuth JSON stores, plus the fork's
+// runtime import for files seeded from outside the container.
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { root, type Root } from "@openclaw/fs-safe";
-import { parseMcpOAuthStoreJson } from "../agents/mcp-oauth-store.js";
+import {
+  parseMcpOAuthStoreJson,
+  updateMcpOAuthStore,
+  type McpOAuthStore,
+} from "../agents/mcp-oauth-store.js";
+import { resolveStateDir } from "../config/paths.js";
+import { logWarn } from "../logger.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -308,6 +316,80 @@ function importAndRecordReceipt(params: {
   );
 }
 
+function replaceStoreFromLegacySource(
+  env: NodeJS.ProcessEnv,
+  storeKey: string,
+  store: Record<string, unknown>,
+): void {
+  const storeJson = JSON.stringify(store);
+  const now = Date.now();
+  runOpenClawStateWriteTransaction(
+    ({ db }) => {
+      executeSqliteQuerySync(
+        db,
+        getNodeSqliteKysely<McpOAuthMigrationDatabase>(db)
+          .insertInto("mcp_oauth_stores")
+          .values({
+            store_key: storeKey,
+            format_version: 1,
+            store_json: storeJson,
+            updated_at: now,
+          })
+          .onConflict((conflict) =>
+            conflict.column("store_key").doUpdateSet({
+              format_version: 1,
+              store_json: storeJson,
+              updated_at: now,
+            }),
+          ),
+      );
+    },
+    { env },
+  );
+}
+
+/**
+ * Isol8 fork: runtime import for an externally seeded legacy store file.
+ *
+ * Headless containers cannot run the interactive `mcp login`; the backend seeds
+ * tokens by writing the retired `<stateDir>/mcp-oauth/<storeKey>.json` from
+ * outside the container. Doctor-only import made that a one-shot channel — a
+ * file written while the gateway was running was never read (and, once a
+ * migration receipt existed, was discarded at the next boot). This runs at
+ * token resolution, inside the per-storeKey OAuth lease — the same fence every
+ * other credential mutation holds — wholesale-replacing the canonical row and
+ * unlinking the file. It never throws into the connect path; a file that does
+ * not parse is left in place for Doctor to report.
+ */
+export function importLegacyMcpOAuthStoreFile(
+  storeKey: string,
+  assertOwnedInTransaction?: (database: DatabaseSync) => void,
+): void {
+  const sourcePath = path.join(resolveStateDir(), LEGACY_MCP_OAUTH_DIR, `${storeKey}.json`);
+  let raw: Buffer;
+  try {
+    if (!fs.lstatSync(sourcePath).isFile()) {
+      return;
+    }
+    raw = fs.readFileSync(sourcePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logWarn(`mcp-oauth: failed reading seeded legacy store ${storeKey}: ${String(error)}`);
+    }
+    return;
+  }
+  try {
+    if (raw.byteLength > MAX_LEGACY_STORE_BYTES) {
+      throw new Error("seeded legacy store is too large");
+    }
+    const store = parseLegacyMcpOAuthStore(JSON.parse(utf8Decoder.decode(raw))) as McpOAuthStore;
+    updateMcpOAuthStore(storeKey, () => store, assertOwnedInTransaction);
+    fs.unlinkSync(sourcePath);
+  } catch (error) {
+    logWarn(`mcp-oauth: failed importing seeded legacy store ${storeKey}: ${String(error)}`);
+  }
+}
+
 function markSourceRemoved(sourceKey: string, env: NodeJS.ProcessEnv): void {
   runOpenClawStateWriteTransaction(
     ({ db }) => {
@@ -343,22 +425,48 @@ async function cleanupReceiptAuthoritativeSources(params: {
   receipt: MigrationReceipt;
   env: NodeJS.ProcessEnv;
   removeSource?: (sourcePath: string) => Promise<void> | void;
-}): Promise<number> {
+}): Promise<{ imported: number; removed: number }> {
   let removed = 0;
+  let imported = 0;
   for (const candidate of [params.sourcePath, `${params.sourcePath}${DOCTOR_CLAIM_SUFFIX}`]) {
     if (!(await params.stateRoot.exists(relativeLegacyPath(params.stateDir, candidate)))) {
       continue;
     }
-    await readLegacySourceSnapshot(params.stateRoot, params.stateDir, candidate, {
-      parseStore: false,
-    });
+    // Isol8 fork: a file recreated at a receipted SOURCE path is an externally
+    // seeded credential (the backend reconnected this server), not stale
+    // residue — import it when it parses instead of discarding it. Claim files
+    // are Doctor's own already-imported bytes and stay cleanup-only; a
+    // recreated file that does not parse keeps the discard behavior.
+    if (candidate === params.sourcePath) {
+      try {
+        const snapshot = await readLegacySourceSnapshot(
+          params.stateRoot,
+          params.stateDir,
+          candidate,
+        );
+        replaceStoreFromLegacySource(
+          params.env,
+          storeKeyForSource(params.sourcePath),
+          snapshot.store,
+        );
+        imported += 1;
+      } catch {
+        await readLegacySourceSnapshot(params.stateRoot, params.stateDir, candidate, {
+          parseStore: false,
+        });
+      }
+    } else {
+      await readLegacySourceSnapshot(params.stateRoot, params.stateDir, candidate, {
+        parseStore: false,
+      });
+    }
     await removePath({ ...params, sourcePath: candidate });
     removed += 1;
   }
   if (!params.receipt.removedSource || removed > 0) {
     markSourceRemoved(params.receipt.sourceKey, params.env);
   }
-  return removed;
+  return { imported, removed };
 }
 
 async function restoreClaim(params: {
@@ -398,8 +506,13 @@ async function migrateOneStore(params: {
   const receipt = readMigrationReceipt(params.sourcePath, params.env);
   if (receipt) {
     try {
-      const removed = await cleanupReceiptAuthoritativeSources({ ...params, receipt });
-      if (removed > 0) {
+      const { imported, removed } = await cleanupReceiptAuthoritativeSources({
+        ...params,
+        receipt,
+      });
+      if (imported > 0) {
+        changes.push("Imported recreated retired MCP OAuth JSON into SQLite.");
+      } else if (removed > 0) {
         changes.push("Discarded recreated retired MCP OAuth JSON without importing it.");
       }
     } catch (error) {
