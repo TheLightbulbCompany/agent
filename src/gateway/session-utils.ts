@@ -20,6 +20,10 @@ export { resolveCanonicalSessionStoreMatchFromStoreKeys } from "./session-utils-
 export { resolveCanonicalSessionEntryFromStoreKeys } from "./session-utils-store.js";
 export { resolveCanonicalGatewaySessionStoreKey } from "./session-utils-store.js";
 export { listAgentsForGateway } from "./session-utils-store.js";
+export {
+  SessionLookupUnavailableError,
+  isSessionLookupUnavailableError,
+} from "./session-utils-store-lookup.js";
 export { resolveGatewaySessionStoreTargetWithStore } from "./session-utils-store-lookup.js";
 export { resolveGatewaySessionStoreTarget } from "./session-utils-store-lookup.js";
 export { getSessionDefaults } from "./session-utils-model.js";
