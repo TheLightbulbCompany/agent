@@ -180,6 +180,22 @@ export function createGatewaySessionStoreDiscoveryCache(params: {
   return cache;
 }
 
+export class SessionLookupUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `session lookup store read failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      cause instanceof Error ? { cause } : undefined,
+    );
+    this.name = "SessionLookupUnavailableError";
+  }
+}
+
+export function isSessionLookupUnavailableError(
+  error: unknown,
+): error is SessionLookupUnavailableError {
+  return error instanceof SessionLookupUnavailableError;
+}
+
 function loadGatewaySessionLookupStore(
   storePath: string,
   clone: boolean | undefined,
@@ -243,8 +259,16 @@ function loadGatewaySessionLookupStoreUncached(
         storePath,
       }).map(({ sessionKey, entry }) => [sessionKey, entry]),
     );
-  } catch {
-    return {};
+  } catch (error) {
+    // A transient read failure (SQLITE_BUSY under a concurrent writer or
+    // checkpoint) must not masquerade as an empty store: callers resolve an
+    // empty store to "no such session", so chat.history answers ok:true with
+    // zero messages -- indistinguishable from a brand-new session -- and
+    // chat.send re-keys the existing session, orphaning its transcript. A
+    // missing database is not an error path here: openOpenClawAgentDatabase
+    // creates it on first open, so a never-ran agent lists zero rows without
+    // throwing.
+    throw new SessionLookupUnavailableError(error);
   }
 }
 

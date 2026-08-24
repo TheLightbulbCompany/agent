@@ -35,6 +35,7 @@ import { capArrayByJsonBytes } from "../session-transcript-readers.js";
 import {
   buildGatewaySessionInfo,
   getSessionDefaults,
+  isSessionLookupUnavailableError,
   loadGatewaySessionEntryReadOnly,
   loadGatewaySessionRow,
   listAgentsForGateway,
@@ -232,18 +233,33 @@ async function handleChatHistoryRequest({
   }
   const requestedAgentId = requestedAgent.agentId;
   const sessionLoadOptions = requestedAgentId ? { agentId: requestedAgentId } : undefined;
-  const { cfg, storePath, store, entry, canonicalKey } = measureDiagnosticsTimelineSpanSync(
-    `gateway.${method}.session_entry`,
-    () =>
-      loadGatewaySessionEntryReadOnly(sessionKey, {
-        ...sessionLoadOptions,
-        includeStoreChildEntries: true,
-      }),
-    {
-      config: requestConfig,
-      phase: method,
-    },
-  );
+  let loadedSession: ReturnType<typeof loadGatewaySessionEntryReadOnly>;
+  try {
+    loadedSession = measureDiagnosticsTimelineSpanSync(
+      `gateway.${method}.session_entry`,
+      () =>
+        loadGatewaySessionEntryReadOnly(sessionKey, {
+          ...sessionLoadOptions,
+          includeStoreChildEntries: true,
+        }),
+      {
+        config: requestConfig,
+        phase: method,
+      },
+    );
+  } catch (error) {
+    if (!isSessionLookupUnavailableError(error)) {
+      throw error;
+    }
+    // Answering ok:true with an empty page here would be indistinguishable from
+    // a genuinely new session -- the client would render an existing transcript
+    // as a fresh chat. The retryable reject is what its history retry ladder
+    // already recovers from.
+    context.logGateway.warn(`${method} session lookup unavailable: ${String(error)}`);
+    respondChatHistoryUnavailable(method, respond);
+    return;
+  }
+  const { cfg, storePath, store, entry, canonicalKey } = loadedSession;
   const selectedAgent = validateChatSelectedAgent({
     cfg,
     requestedSessionKey: sessionKey,
