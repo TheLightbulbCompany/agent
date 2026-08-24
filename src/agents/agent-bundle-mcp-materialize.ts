@@ -608,6 +608,9 @@ export async function materializeBundleMcpToolsForRun(params: {
  */
 export async function materializeBundleMcpToolsForRunNonBlocking(params: {
   runtime: SessionMcpRuntime;
+  // Mirrors the blocking materializer: the ownership refactor (#114388) made
+  // callers pass agentId, and the warm path forwards `params` wholesale.
+  agentId?: string;
   reservedToolNames?: Iterable<string>;
   disposeRuntime?: () => Promise<void>;
 }): Promise<BundleMcpToolRuntime> {

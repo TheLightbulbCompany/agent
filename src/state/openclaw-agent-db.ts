@@ -485,13 +485,21 @@ export function runOpenClawAgentWriteTransaction<T>(
 
 let unregisterExitClose: (() => void) | null = null;
 
-function closeCachedOpenClawAgentDatabase(
-  database: OpenClawAgentDatabase,
-  options: { eviction?: boolean } = {},
-): void {
-  // Eviction must stay cheap: PASSIVE skips waiting on concurrent readers,
-  // whose drained TRUNCATE checkpoints blocked the event loop for seconds.
-  database.walMaintenance.close(options.eviction ? { checkpointMode: "PASSIVE" } : undefined);
+function closeCachedOpenClawAgentDatabase(database: OpenClawAgentDatabase): void {
+  // PASSIVE on EVERY close, not just eviction: litestream keeps a permanent
+  // read mark on these databases, so a TRUNCATE close-checkpoint can never
+  // drain readers -- it burns its full busy_timeout while HOLDING the write
+  // lock, which is the boot-window and reconcile-worker lock-storm mechanism.
+  // Delete paths lose nothing: the WAL is unlinked together with the database.
+  const closeStartedAt = Date.now();
+  database.walMaintenance.close({ checkpointMode: "PASSIVE" });
+  const closeElapsedMs = Date.now() - closeStartedAt;
+  if (closeElapsedMs >= 1_000) {
+    // Log transport drops structured metadata; keep fields in the message.
+    agentDbLog.warn(
+      `slow agent database close checkpoint agent=${database.agentId} elapsedMs=${closeElapsedMs} path=${database.path}`,
+    );
+  }
   if (database.db.isOpen) {
     database.db.close();
   }
@@ -522,7 +530,7 @@ function evictLruAgentDatabaseHandles(): void {
       }
       // Registry rows are durable discovery metadata; only explicit disposal
       // unregisters them, while eviction closes this process-local handle.
-      closeCachedOpenClawAgentDatabase(database, { eviction: true });
+      closeCachedOpenClawAgentDatabase(database);
       cachedDatabases.delete(pathname);
       cachedDatabaseOpenFailures.delete(pathname);
       agentDbLog.debug("evicted OpenClaw agent database handle", {
