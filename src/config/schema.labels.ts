@@ -682,6 +682,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "commands.ownerAllowFrom": "Command Owners",
   "commands.allowFrom": "Command Elevated Access Rules",
   mcp: "MCP",
+  "mcp.runtimeScope": "MCP Runtime Scope",
   "mcp.servers": "MCP Servers",
   "mcp.servers.*.enabled": "MCP Server Enabled",
   "mcp.servers.*.auth": "MCP Server Auth",

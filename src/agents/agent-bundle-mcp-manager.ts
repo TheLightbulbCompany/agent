@@ -14,7 +14,9 @@ import {
 import { assignSafeServerNames } from "./agent-bundle-mcp-names.js";
 import { loadSessionMcpConfig } from "./agent-bundle-mcp-runtime-config.js";
 import {
+  buildSharedRuntimeKey,
   resolveSessionMcpRuntimeIdleTtlMs,
+  resolveSessionMcpRuntimeScope,
   type CreateSessionMcpRuntime,
 } from "./agent-bundle-mcp-runtime-shared.js";
 import type { SessionMcpRuntime, SessionMcpRuntimeManager } from "./agent-bundle-mcp-types.js";
@@ -129,10 +131,49 @@ export function createSessionMcpRuntimeManager(
       } = partitionMcpServersByConnectionScope(fullConfig.loaded.mcpServers);
       const hasRequesterScoped = requesterScopedServerNames.length > 0;
 
+      // ISOL8 FORK PATCH (shared-runtime-scope): when mcp.runtimeScope === "shared",
+      // key the STATIC runtime on (workspaceDir, agentDir, configFingerprint)
+      // instead of the sessionId, so sessions sharing a workspace + agent + MCP
+      // config reuse one connected runtime (single-tenant per-owner containers --
+      // collapses a per-session connect storm into one runtime per agent).
+      // The shared runtime is reaped only by the idle sweep + leases, never by
+      // per-session disposal, so its store key doubles as its sessionId
+      // (masquerade), keeping it out of every real session's
+      // runtimeKeysForSessionId set. MCP-App view leases bind to a per-session
+      // runtime identity, so shared scope stands down when apps are enabled.
+      const useSharedStaticScope =
+        resolveSessionMcpRuntimeScope(params.cfg) === "shared" &&
+        params.cfg?.mcp?.apps?.enabled !== true;
+      // Store identity for a static runtime entry. In shared scope this also
+      // records the sessionId -> sharedKey peek index so peekSession (and the
+      // read-only tools.effective projection) can find the shared runtime by its
+      // real session. `excludeServerNames` must mirror the getOrCreateRuntimeEntry
+      // call so the fingerprint (and thus the shared key) matches the runtime.
+      const staticRuntimeIdentity = (
+        excludeServerNames?: ReadonlySet<string>,
+      ): { runtimeKey: string; sessionId: string } => {
+        if (!useSharedStaticScope) {
+          return { runtimeKey: params.sessionId, sessionId: params.sessionId };
+        }
+        const { fingerprint } = loadSessionMcpConfig({
+          workspaceDir: params.workspaceDir,
+          cfg: params.cfg,
+          logDiagnostics: false,
+          manifestRegistry: params.manifestRegistry,
+          ...(excludeServerNames ? { excludeServerNames } : {}),
+          safeServerNamesByServer,
+          toolOverrides: params.toolOverrides,
+        });
+        const sharedKey = buildSharedRuntimeKey(params.workspaceDir, params.agentDir, fingerprint);
+        store.runtimeKeyBySessionId.set(params.sessionId, sharedKey);
+        return { runtimeKey: sharedKey, sessionId: sharedKey };
+      };
+
       if (!hasRequesterScoped) {
+        const identity = staticRuntimeIdentity();
         return await install.getOrCreateRuntimeEntry({
-          runtimeKey: params.sessionId,
-          sessionId: params.sessionId,
+          runtimeKey: identity.runtimeKey,
+          sessionId: identity.sessionId,
           sessionKey: params.sessionKey,
           workspaceDir: params.workspaceDir,
           agentDir: params.agentDir,
@@ -150,8 +191,7 @@ export function createSessionMcpRuntimeManager(
       if (Object.keys(staticServers).length > 0) {
         parts.push(
           await install.getOrCreateRuntimeEntry({
-            runtimeKey: params.sessionId,
-            sessionId: params.sessionId,
+            ...staticRuntimeIdentity(scopedNameSet),
             sessionKey: params.sessionKey,
             workspaceDir: params.workspaceDir,
             agentDir: params.agentDir,
@@ -286,7 +326,15 @@ export function createSessionMcpRuntimeManager(
       const sessionId =
         params.sessionId ??
         (params.sessionKey ? store.sessionIdBySessionKey.get(params.sessionKey) : undefined);
-      return sessionId ? store.runtimesBySessionId.get(sessionId) : undefined;
+      if (!sessionId) {
+        return undefined;
+      }
+      // Shared-runtime-scope: resolve to the shared runtimeKey when this session
+      // has one; otherwise the sessionId is the key (session scope / default). A
+      // stale mapping (runtime already idle-swept) resolves to undefined, which
+      // is the correct answer.
+      const runtimeKey = store.runtimeKeyBySessionId.get(sessionId) ?? sessionId;
+      return store.runtimesBySessionId.get(runtimeKey);
     },
     async disposeSession(sessionId) {
       await lifecycle.disposeManagedSession(sessionId);
@@ -360,6 +408,7 @@ export function createSessionMcpRuntimeManager(
       const runtimes = Array.from(store.runtimesBySessionId.values());
       store.runtimesBySessionId.clear();
       store.sessionIdBySessionKey.clear();
+      store.runtimeKeyBySessionId.clear();
       store.idleTtlMsBySessionId.clear();
       store.deferredRetirementSessionIds.clear();
       store.requiredRetirementSessionIds.clear();
@@ -398,6 +447,7 @@ export function createSessionMcpRuntimeManager(
       requesterWorkChains: store.requesterWorkChains.size,
       sessionKeys: store.sessionIdBySessionKey.size,
       idleTtl: store.idleTtlMsBySessionId.size,
+      runtimeKeyIndex: store.runtimeKeyBySessionId.size,
       deferredRetirement: store.deferredRetirementSessionIds.size,
       advertisedScopedCatalogs: store.advertisedScopedCatalogBySessionId.size,
     }),

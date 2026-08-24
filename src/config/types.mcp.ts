@@ -70,6 +70,12 @@ export type McpServerConfig = {
 export type McpConfig = {
   /** Named MCP server definitions managed by OpenClaw. */
   servers?: Record<string, McpServerConfig>;
+  /**
+   * ISOL8 FORK KEY. Bundled-MCP runtime cache scope. `"shared"` keys the static
+   * runtime on (workspaceDir, agentDir, configFingerprint) instead of sessionId
+   * so sessions on one owner container reuse one connected runtime.
+   */
+  runtimeScope?: "session" | "shared";
   /** Opt-in MCP Apps rendering and app-to-server bridge. */
   apps?: {
     enabled?: boolean;

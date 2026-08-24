@@ -211,6 +211,8 @@ export const AGENT_FIELD_HELP: Record<string, string> = {
   "commands.allowFrom":
     "Defines elevated command allow rules by channel and sender for owner-level command surfaces. Use narrow provider-specific identities so privileged commands are not exposed to broad chat audiences.",
   mcp: "Global MCP server definitions managed by OpenClaw. Embedded OpenClaw and other runtime adapters can consume these servers without storing them inside runtime-owned project settings.",
+  "mcp.runtimeScope":
+    'Scope for the bundled MCP runtime cache. "session" (default) creates one runtime per session and disposes it when the session is retired. "shared" reuses one runtime per (workspaceDir, agentDir, configFingerprint) across all sessions; per-session disposal does not tear it down - it is reaped only by the idle sweep once no session has used it within the TTL and it holds no active leases. Use "shared" in single-tenant deployments where every session shares one workspace and MCP config, to avoid a per-session MCP connect storm.',
   "mcp.servers":
     "Named MCP server definitions. OpenClaw stores them in its own config and runtime adapters decide which transports are supported at execution time.",
   "mcp.servers.*.codex":

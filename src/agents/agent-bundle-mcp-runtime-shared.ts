@@ -52,3 +52,41 @@ export type CreateSessionMcpRuntime = (params: {
 export function resolveSessionMcpRuntimeIdleTtlMs(): number {
   return DEFAULT_SESSION_MCP_RUNTIME_IDLE_TTL_MS;
 }
+
+// ISOL8 FORK PATCH (shared-runtime-scope) --------------------------------------
+// Bundled-MCP runtime cache scope. Fork-only key `mcp.runtimeScope`.
+export type SessionMcpRuntimeScope = "session" | "shared";
+
+/**
+ * - `"session"` (default, upstream behavior): the static runtime is keyed by the
+ *   gateway sessionId, so every session gets its own runtime and per-session
+ *   disposal tears it down.
+ * - `"shared"`: the static runtime is keyed by (workspaceDir, agentDir,
+ *   configFingerprint) instead, so sessions that share a workspace + agent + MCP
+ *   server config reuse one already-connected runtime. Reaped by the idle sweep
+ *   (a fixed DEFAULT_SESSION_MCP_RUNTIME_IDLE_TTL_MS at this base -- upstream
+ *   retired the `mcp.sessionIdleTtlMs` knob), never by per-session disposal.
+ *   Intended for single-tenant per-owner containers, where every session is the
+ *   same owner and sharing collapses an otherwise per-session MCP connect storm.
+ */
+export function resolveSessionMcpRuntimeScope(cfg?: OpenClawConfig): SessionMcpRuntimeScope {
+  return cfg?.mcp?.runtimeScope === "shared" ? "shared" : "session";
+}
+
+const SHARED_RUNTIME_KEY_PREFIX = "__mcp-shared__";
+
+/**
+ * Cache key for a shared static MCP runtime. The prefix guarantees it never
+ * collides with a caller-supplied sessionId (those look like `agent:<id>:...`) or
+ * a requester-scoped composite key (JSON, starts with `{`). `agentDir` is part of
+ * the key because the manager's static-reuse check is agentDir-sensitive -- two
+ * agents sharing one workspace would otherwise thrash a single runtime between
+ * them on every alternation.
+ */
+export function buildSharedRuntimeKey(
+  workspaceDir: string,
+  agentDir: string | undefined,
+  configFingerprint: string,
+): string {
+  return `${SHARED_RUNTIME_KEY_PREFIX}::${workspaceDir}::${agentDir ?? ""}::${configFingerprint}`;
+}

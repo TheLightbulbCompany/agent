@@ -4515,6 +4515,7 @@ describe("requester-scoped MCP connection resolution", () => {
       requesterWorkChains: 0,
       sessionKeys: 0,
       idleTtl: 0,
+      runtimeKeyIndex: 0,
       deferredRetirement: 0,
       advertisedScopedCatalogs: 0,
     });
@@ -6492,4 +6493,74 @@ process.on("SIGINT", shutdown);`,
     },
   );
 });
+
+describe("ISOL8 fork: mcp.runtimeScope", () => {
+  function sharedScopeHarness() {
+    const created: string[] = [];
+    const createRuntime: RuntimeFactory = (params) => {
+      created.push(params.sessionId);
+      const runtime = makeRuntime([{ toolName: "probe", description: "probe" }]);
+      return {
+        ...runtime,
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+        workspaceDir: params.workspaceDir,
+        configFingerprint: params.configFingerprint ?? "fingerprint",
+        dispose: async () => {},
+      };
+    };
+    return { created, manager: testing.createSessionMcpRuntimeManager({ createRuntime }) };
+  }
+
+  it("session scope (default) gives each session its own runtime", async () => {
+    const { created, manager } = sharedScopeHarness();
+    const manifestRegistry = { plugins: [] };
+    const a = await manager.getOrCreate({
+      sessionId: "session-a",
+      workspaceDir: "/workspace",
+      manifestRegistry,
+    });
+    const b = await manager.getOrCreate({
+      sessionId: "session-b",
+      workspaceDir: "/workspace",
+      manifestRegistry,
+    });
+    expect(created).toEqual(["session-a", "session-b"]);
+    expect(a).not.toBe(b);
+    await manager.disposeAll();
+  });
+
+  it("shared scope reuses one runtime across sessions on the same workspace+agent", async () => {
+    // The point of the fork key: on a single-tenant per-owner container every
+    // session is the same owner, so a per-session runtime means a per-session
+    // MCP connect storm at boot.
+    const { created, manager } = sharedScopeHarness();
+    const manifestRegistry = { plugins: [] };
+    const cfg = { mcp: { runtimeScope: "shared" as const } };
+    const a = await manager.getOrCreate({
+      sessionId: "session-a",
+      workspaceDir: "/workspace",
+      manifestRegistry,
+      cfg,
+    });
+    const b = await manager.getOrCreate({
+      sessionId: "session-b",
+      workspaceDir: "/workspace",
+      manifestRegistry,
+      cfg,
+    });
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatch(/^__mcp-shared__::/);
+    expect(a).toBe(b);
+    // Both real sessions resolve to the shared runtime through the peek index.
+    expect(manager.peekSession({ sessionId: "session-a" })).toBe(a);
+    expect(manager.peekSession({ sessionId: "session-b" })).toBe(a);
+    // Per-session disposal must NOT tear down a runtime another session is using.
+    await manager.disposeSession("session-a");
+    expect(manager.peekSession({ sessionId: "session-b" })).toBe(a);
+    await manager.disposeAll();
+    expect(testing.getBookkeepingSizes(manager).runtimeKeyIndex).toBe(0);
+  });
+});
+
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

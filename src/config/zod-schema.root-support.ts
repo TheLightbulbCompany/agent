@@ -456,6 +456,9 @@ export function validateHttpOrigin(value: string): boolean {
 export const McpConfigSchema = z
   .strictObject({
     servers: createMcpServersSchema(McpServerNameSchema).optional(),
+    // ISOL8 FORK KEY: see agent-bundle-mcp-runtime-shared.ts. Omitting this from
+    // the strict object would crash-loop every MCP owner on boot.
+    runtimeScope: z.enum(["session", "shared"]).optional(),
     apps: z
       .strictObject({
         enabled: z.boolean().optional(),
