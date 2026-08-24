@@ -117,7 +117,7 @@ export const AgentDefaultsSchema = z
     contextLimits: AgentContextLimitsSchema,
     contextPruning: z
       .object({
-        mode: z.union([z.literal("off"), z.literal("cache-ttl")]).optional(),
+        mode: z.union([z.literal("off"), z.literal("cache-ttl"), z.literal("size")]).optional(),
         ttl: z.string().optional(),
         tools: z
           .object({

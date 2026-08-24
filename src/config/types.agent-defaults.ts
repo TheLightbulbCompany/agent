@@ -65,7 +65,7 @@ export type AgentModelListConfig = {
 
 export type AgentContextPruningConfig = {
   /** Pruning mode for old tool results in model context. */
-  mode?: "off" | "cache-ttl";
+  mode?: "off" | "cache-ttl" | "size";
   /** TTL to consider cache expired (duration string, default unit: minutes). */
   ttl?: string;
   tools?: {

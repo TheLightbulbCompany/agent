@@ -317,19 +317,36 @@ export function installEmbeddedAttemptContextGuards(input: {
       : {};
 
   const contextPruning = attempt.config?.agents?.defaults?.contextPruning;
-  // Disabled pruning must not resolve provider hooks and cold-load plugin metadata.
-  const cacheTtlSettings =
-    contextPruning?.mode === "cache-ttl" &&
-    isCacheTtlEligibleProvider(attempt.provider, attempt.modelId, attempt.model.api)
-      ? resolveCacheTtlPruningSettings(contextPruning)
-      : undefined;
+  const configuredPruningMode = contextPruning?.mode;
+  // `cache-ttl` pruning is prompt-cache-aware: it only trims once the provider's
+  // prompt cache has aged past its TTL, so it is limited to providers that emit
+  // cache markers (Anthropic family, Google). On providers without a prompt
+  // cache -- notably OpenAI / ChatGPT-responses -- that mode is completely inert,
+  // and long tool-heavy sessions accumulate tool results until they overflow the
+  // context window, which neither compaction (summarizes conversation, not tool
+  // results) nor the cache-TTL pruner can recover. Degrade it to provider-
+  // agnostic `size` pruning there. `size` is never gated on the provider.
+  // Disabled pruning must still not resolve provider hooks and cold-load plugin
+  // metadata, so eligibility is only probed once a pruning mode is configured.
+  const effectivePruningMode: "cache-ttl" | "size" | undefined =
+    configuredPruningMode !== "cache-ttl" && configuredPruningMode !== "size"
+      ? undefined
+      : configuredPruningMode === "size" ||
+          !isCacheTtlEligibleProvider(attempt.provider, attempt.modelId, attempt.model.api)
+        ? "size"
+        : "cache-ttl";
+  const cacheTtlSettings = effectivePruningMode
+    ? resolveCacheTtlPruningSettings({ ...contextPruning, mode: effectivePruningMode })
+    : undefined;
   const previousCacheTtlTransform = activeSession.agent.transformContext;
-  let lastCacheTouchAt = cacheTtlSettings
-    ? readLastCacheTtlTimestamp(input.sessionManager, {
-        provider: attempt.provider,
-        modelId: attempt.modelId,
-      })
-    : null;
+  // Only `cache-ttl` consults the cache marker; `size` prunes on ratios alone.
+  let lastCacheTouchAt =
+    cacheTtlSettings && effectivePruningMode === "cache-ttl"
+      ? readLastCacheTtlTimestamp(input.sessionManager, {
+          provider: attempt.provider,
+          modelId: attempt.modelId,
+        })
+      : null;
   if (cacheTtlSettings) {
     activeSession.agent.transformContext = async (messages, signal) => {
       const transformed = previousCacheTtlTransform
