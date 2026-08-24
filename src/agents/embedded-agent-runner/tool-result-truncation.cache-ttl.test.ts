@@ -208,3 +208,60 @@ describe("cache-TTL tool-result projection", () => {
     expect(toolText(result, "tool-0")).toBe("[cleared by test]");
   });
 });
+
+describe("size mode (providers without a prompt cache)", () => {
+  it("resolves settings for mode:size, which cache-ttl-only gating would drop", () => {
+    expect(
+      resolveCacheTtlPruningSettings({ mode: "size" } as AgentContextPruningConfig),
+    ).toMatchObject({
+      mode: "size",
+    });
+    expect(
+      resolveCacheTtlPruningSettings({ mode: "off" } as AgentContextPruningConfig),
+    ).toBeUndefined();
+  });
+
+  it("prunes with no cache marker, where cache-ttl is permanently inert", () => {
+    // The regression this guards: on OpenAI/chatgpt-responses nothing ever
+    // writes a cache marker, so lastCacheTouchAt is always null. Under
+    // cache-ttl that returns the transcript untouched forever and tool results
+    // accumulate until the context window overflows.
+    const settings = resolveCacheTtlPruningSettings({
+      mode: "size",
+      hardClear: { enabled: true },
+    } as AgentContextPruningConfig);
+    expect(settings).toBeDefined();
+    const messages = [
+      user("hello"),
+      ...Array.from({ length: 6 }, (_, i) => [
+        assistant(),
+        tool({ id: `t${i}`, text: "x".repeat(20_000) }),
+      ]).flat(),
+      assistant(),
+    ];
+    const pruned = pruneExpiredCacheTtlToolResults({
+      messages,
+      settings: settings!,
+      contextWindowTokens: 1_000,
+      lastCacheTouchAt: null,
+      dropThinkingBlocksForEstimate: false,
+      now: NOW,
+    });
+    expect(pruned).not.toBe(messages);
+
+    const cacheTtl = resolveCacheTtlPruningSettings({
+      mode: "cache-ttl",
+      hardClear: { enabled: true },
+    } as AgentContextPruningConfig);
+    expect(
+      pruneExpiredCacheTtlToolResults({
+        messages,
+        settings: cacheTtl!,
+        contextWindowTokens: 1_000,
+        lastCacheTouchAt: null,
+        dropThinkingBlocksForEstimate: false,
+        now: NOW,
+      }),
+    ).toBe(messages);
+  });
+});

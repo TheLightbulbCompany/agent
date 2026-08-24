@@ -41,6 +41,9 @@ const CACHE_TTL_IMAGE_MARKER = "[image removed during context pruning]";
 const CACHE_TTL_DEFAULT_PLACEHOLDER = "[Old tool result content cleared]";
 
 type CacheTtlPruningSettings = {
+  // "size" prunes on the size ratios alone; "cache-ttl" additionally waits for
+  // the provider's prompt cache to age past its TTL.
+  mode: "cache-ttl" | "size";
   ttlMs: number;
   hardClear: boolean;
   placeholder: string;
@@ -51,7 +54,7 @@ type CacheTtlToolResultMessage = Extract<AgentMessage, { role: "toolResult" }>;
 export function resolveCacheTtlPruningSettings(
   config: AgentContextPruningConfig | undefined,
 ): CacheTtlPruningSettings | undefined {
-  if (config?.mode !== "cache-ttl") {
+  if (config?.mode !== "cache-ttl" && config?.mode !== "size") {
     return undefined;
   }
   let ttlMs = 5 * 60_000;
@@ -64,6 +67,7 @@ export function resolveCacheTtlPruningSettings(
   const deny = compileGlobPatterns({ raw: config.tools?.deny, normalize });
   const allow = compileGlobPatterns({ raw: config.tools?.allow, normalize });
   return {
+    mode: config.mode,
     ttlMs,
     hardClear: config.hardClear?.enabled ?? true,
     placeholder: config.hardClear?.placeholder?.trim() || CACHE_TTL_DEFAULT_PLACEHOLDER,
@@ -172,10 +176,15 @@ export function pruneExpiredCacheTtlToolResults(params: {
   now: number;
 }): AgentMessage[] {
   const { messages, settings } = params;
+  // `size` is provider-agnostic: it never consults the prompt-cache marker, so
+  // the TTL wait below would make it permanently inert on providers that emit
+  // no cache markers (OpenAI / ChatGPT-responses) -- the exact case this mode
+  // exists for. The size ratios further down remain the only gate.
   if (
-    !params.lastCacheTouchAt ||
-    settings.ttlMs <= 0 ||
-    params.now - params.lastCacheTouchAt < settings.ttlMs
+    settings.mode === "cache-ttl" &&
+    (!params.lastCacheTouchAt ||
+      settings.ttlMs <= 0 ||
+      params.now - params.lastCacheTouchAt < settings.ttlMs)
   ) {
     return messages;
   }
