@@ -9,7 +9,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveCdpReachabilityPolicy } from "./cdp-reachability-policy.js";
 import type { CdpSendFn } from "./cdp.helpers.js";
 import { withCdpSocket } from "./cdp.helpers.js";
-import { getChromeWebSocketUrl } from "./chrome.js";
+import { getChromeWebSocketEndpoint } from "./chrome.js";
 import type { ResolvedBrowserConfig, ResolvedBrowserProfile } from "./config.js";
 import { getBrowserProfileCapabilities } from "./profile-capabilities.js";
 import type { BrowserServerState } from "./server-context.types.js";
@@ -45,15 +45,22 @@ async function withBrowserCdpSend<T>(
   fn: (send: CdpSendFn) => Promise<T>,
 ): Promise<T | undefined> {
   const ssrfPolicy = resolveCdpReachabilityPolicy(profile, resolved.ssrfPolicy);
-  const wsUrl = await getChromeWebSocketUrl(
+  // 8.1 replaced getChromeWebSocketUrl (string) with getChromeWebSocketEndpoint,
+  // which also carries the resolved DNS pin. Forward `lookup` alongside the url:
+  // it is what keeps the socket bound to the SSRF-validated address, so dropping
+  // it would silently widen the endpoint check.
+  const endpoint = await getChromeWebSocketEndpoint(
     profile.cdpUrl,
     SESSION_STATE_CDP_TIMEOUT_MS,
     ssrfPolicy,
   );
-  if (!wsUrl) {
+  if (!endpoint) {
     return undefined;
   }
-  return await withCdpSocket(wsUrl, fn, { commandTimeoutMs: SESSION_STATE_CDP_TIMEOUT_MS });
+  return await withCdpSocket(endpoint.url, fn, {
+    commandTimeoutMs: SESSION_STATE_CDP_TIMEOUT_MS,
+    lookup: endpoint.lookup,
+  });
 }
 
 /**
