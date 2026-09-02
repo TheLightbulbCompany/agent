@@ -24,6 +24,7 @@ import {
   PAYMENT_CREDENTIAL_ENV_KEYS,
   PAYMENT_CREDENTIAL_JSON_KEYS,
   PAYMENT_CREDENTIAL_QUERY_KEYS,
+  SHELL_EXPANSION_PRESERVING_PATTERN_SOURCES,
   SHELL_REFERENCE_PRESERVING_PATTERN_SOURCES,
   TOOL_PAYLOAD_AMBIGUOUS_ASSIGNMENT_PATTERNS,
   TOOL_PAYLOAD_REDACT_PATTERNS,
@@ -39,6 +40,7 @@ const DEFAULT_REDACT_MIN_LENGTH = 18;
 const DEFAULT_REDACT_KEEP_START = 6;
 const DEFAULT_REDACT_KEEP_END = 4;
 const shellReferencePreservingPatterns = new WeakSet<RegExp>();
+const shellExpansionPreservingPatterns = new WeakSet<RegExp>();
 // Patterns whose left-context assertions or complete token can cross a chunk boundary must run
 // against the full string; chunking can invent a `^` boundary or split the secret itself.
 const chunkUnsafePatterns = new WeakSet<RegExp>();
@@ -173,6 +175,9 @@ function parsePattern(raw: RedactPattern): RegExp | null {
   }
   if (pattern && typeof raw === "string" && SHELL_REFERENCE_PRESERVING_PATTERN_SOURCES.has(raw)) {
     shellReferencePreservingPatterns.add(pattern);
+  }
+  if (pattern && typeof raw === "string" && SHELL_EXPANSION_PRESERVING_PATTERN_SOURCES.has(raw)) {
+    shellExpansionPreservingPatterns.add(pattern);
   }
   if (pattern && typeof raw === "string" && TOOL_PAYLOAD_AMBIGUOUS_ASSIGNMENT_PATTERNS.has(raw)) {
     sourceAssignmentPatterns.add(pattern);
@@ -611,6 +616,18 @@ function isEmptyShellParameterExpansionTail(token: string): boolean {
   return /^[-=?+]\}$/.test(token);
 }
 
+// True when a captured header credential is a shell expansion sigil (`$VAR`, `${VAR...}`,
+// `$(cmd)`) rather than a literal token -- a NAME, never a credential value. The opaque
+// credential class stops before `}`/`)` (they are structural, not credential characters), so a
+// braced or command-substitution expansion arrives truncated (`${OPENCLAW_HOOK_TOKEN:-` or
+// `$(printenv OPENCLAW_HOOK_TOKEN`, cut at the first excluded/whitespace char); checking only the
+// leading sigil is sufficient and works either way. Accepted trade-off: a literal that starts
+// with `$` followed by a letter or `_` (e.g. `$abc`) is indistinguishable from a real expansion
+// by syntax alone, so it is preserved too -- this is a heuristic, not a shell parser.
+function isShellExpansion(token: string): boolean {
+  return /^\$(?:\(|\{|[A-Za-z_])/.test(token);
+}
+
 function hasBackreferenceToGroup(pattern: RegExp, groupNumber: number): boolean {
   return new RegExp(String.raw`\\${groupNumber}(?!\d)`).test(pattern.source);
 }
@@ -730,6 +747,12 @@ function redactMatch(
     isShellReferencePattern &&
     (shouldPreserveShellReferenceMatch(match, token) || isEmptyShellParameterExpansionTail(token))
   ) {
+    return match;
+  }
+  // Preserve shell expansions captured by Authorization/API-key header patterns -- a `$VAR`
+  // reference is a name, not a credential, and masking it makes the agent copy the masked
+  // header on its next turn and 401 (see isShellExpansion's doc comment).
+  if (shellExpansionPreservingPatterns.has(pattern) && isShellExpansion(token)) {
     return match;
   }
   // Assignment values can legitimately include trailing shell/structural characters

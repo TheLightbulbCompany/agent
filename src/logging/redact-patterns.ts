@@ -116,6 +116,20 @@ export const SHELL_REFERENCE_PRESERVING_PATTERN_SOURCES = new Set([
   STANDALONE_ASSIGNMENT_QUOTED_REDACT_PATTERN,
   STANDALONE_ASSIGNMENT_REDACT_PATTERN,
 ]);
+// A shell expansion (`$VAR`, `${VAR...}`, `$(cmd)`) captured by an HTTP auth/API-key header
+// pattern is a NAME, never a credential value: masking it just breaks the agent's next attempt
+// to reuse the header. Parallel to (but independent of) the assignment-key-matching mechanism
+// above -- this preserves any shell-expansion syntax for the header patterns, regardless of
+// which variable it names (unlike the assignment mechanism, which only preserves a value that
+// echoes its own key).
+export const SHELL_EXPANSION_PRESERVING_PATTERN_SOURCES = new Set([
+  AUTHORIZATION_BEARER_REDACT_PATTERN,
+  AUTHORIZATION_BASIC_REDACT_PATTERN,
+  AUTHORIZATION_BOT_REDACT_PATTERN,
+  ...HTTP_AUTH_HEADER_REDACT_PATTERNS,
+  GATEWAY_SECURITY_COLON_HEADER_REDACT_PATTERN,
+  GATEWAY_SECURITY_EQUALS_ASSIGNMENT_REDACT_PATTERN,
+]);
 export const CHUNK_UNSAFE_PATTERN_SOURCES = new Set([
   TELEGRAM_BOT_TOKEN_REDACT_PATTERN,
   TELEGRAM_TOKEN_REDACT_PATTERN,

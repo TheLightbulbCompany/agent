@@ -517,6 +517,53 @@ describe("redactSensitiveText", () => {
     expect(output).not.toContain(secret);
   });
 
+  it("preserves shell expansions in Authorization/API-key headers", () => {
+    const input = [
+      'curl -sS -H "Authorization: Bearer $OPENCLAW_HOOK_TOKEN" "$ISOL8_API_URL/x"',
+      '-H "Authorization: Bearer ${OPENCLAW_HOOK_TOKEN:-}"',
+      '-H "Authorization: Bearer $(printenv OPENCLAW_HOOK_TOKEN)"',
+      "Authorization: Basic $BASIC_CREDS",
+      "X-Api-Key: $KEY",
+      "Authorization: Bot $BOT_TOKEN",
+      "Proxy-Authorization: Bearer $PROXY_TOKEN",
+      "Authorization: token $GH_TOKEN",
+      "X-OpenClaw-Token: $OPENCLAW_HOOK_TOKEN",
+      "X-Auth-Token=$AUTH",
+    ].join("\n");
+    const output = redactSensitiveText(input, { mode: "tools" });
+    expect(output).toBe(input);
+  });
+
+  it("still masks a literal Bearer token that is not a shell expansion", () => {
+    const secret = ["hook", "TOKEN", "0123456789abcdefghij"].join("-");
+    const output = redactSensitiveText(`Authorization: Bearer ${secret}`, { mode: "tools" });
+    expect(output).toBe("Authorization: Bearer hook-T…ghij");
+    expect(output).not.toContain(secret);
+  });
+
+  it("masks $-shaped values that are not a shell expansion", () => {
+    const input = [
+      "Authorization: Bearer $",
+      "Authorization: Bearer $$",
+      "Authorization: Bearer $1",
+      "Authorization: Bearer $2b$12$abcdefghijklmnopqrstuv",
+    ].join("\n");
+    const output = redactSensitiveText(input, { mode: "tools" });
+    expect(output).not.toContain("$2b$12$abcdefghijklmnopqrstuv");
+    for (const line of output.split("\n")) {
+      expect(line).toMatch(/\*\*\*|\u2026/u);
+    }
+  });
+
+  it("treats a $-prefixed literal as a shell expansion too (accepted trade-off)", () => {
+    // isShellExpansion is a syntax-only heuristic -- it cannot distinguish a real `$VAR`
+    // reference from a literal that starts with `$` followed by a letter or `_`, so `$abc`
+    // is preserved unmasked rather than forced through masking.
+    const input = "Authorization: Bearer $abc";
+    const output = redactSensitiveText(input, { mode: "tools" });
+    expect(output).toBe(input);
+  });
+
   it("masks non-Bearer authorization schemes", () => {
     const firstValue = ["sample", "value", "1234567890abcd"].join("");
     const secondValue = ["sample", "proxy", "value", "1234567890"].join("");
