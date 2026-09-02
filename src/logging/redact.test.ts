@@ -1746,6 +1746,23 @@ describe("redactSensitiveText", () => {
     }
   });
 
+  it("masks an X-Api-Key header that straddles a bounded-replacement chunk boundary", () => {
+    // GATEWAY_SECURITY_COLON_HEADER_REDACT_PATTERN was missing from CHUNK_UNSAFE_PATTERN_SOURCES,
+    // so on payloads over the chunk threshold it ran chunked and a header value straddling a
+    // 16 KiB boundary was split: the half before the boundary got masked, the half after leaked.
+    const chunkSize = 16_384;
+    const secret = ["gw", "api", "key", "0123456789abcdefghij"].join("-");
+    const header = `X-Api-Key: ${secret}`;
+    const tokenStart = chunkSize - 12;
+    const prefix = `${"x".repeat(tokenStart - 1)} `;
+    const suffix = ` ${"y".repeat(chunkSize * 2)}`;
+    const input = `${prefix}${header}${suffix}`;
+    expect(input.length).toBeGreaterThan(32_768);
+    expect(redactSensitiveText(input, { mode: "tools" })).toBe(
+      `${prefix}X-Api-Key: gw-api…ghij${suffix}`,
+    );
+  });
+
   it("does not corrupt base64 blobs that embed token-prefix shapes", () => {
     // Tiny-PNG base64 contains a gAAAA run from zero-filled IHDR bytes; pure-base64-alphabet
     // prefixes must not fire mid-blob or media payloads get mangled.
